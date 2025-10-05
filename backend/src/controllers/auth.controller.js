@@ -33,10 +33,10 @@ export const signUp = async (req, res) =>{
             const saveUser = await newUser.save()
             generateToken(saveUser._id, res)
             res.status(201).json({
-                _id: newUser._id,
-                fullName: newUser.fullName,
-                email: newUser.email,
-                profilePic: newUser.profilePic
+                _id: saveUser._id,
+                fullName: saveUser.fullName,
+                email: saveUser.email,
+                profilePic: saveUser.profilePic
             })
         } else{ 
             return res.status(400).json({message: "Invalid User"})
