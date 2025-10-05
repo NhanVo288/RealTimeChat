@@ -18,4 +18,4 @@ if(process.env.NODE_ENV === 'production'){
         res.sendFile(path.join(__dirname,"../frontend/dist/index.html"))
     })
 }
-app.listen(3000, () => console.log("server running on port:", PORT))
+app.listen(PORT, () => console.log("server running on port:", PORT))
