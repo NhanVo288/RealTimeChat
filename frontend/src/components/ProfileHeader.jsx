@@ -7,7 +7,7 @@ const mouseClickSound = new Audio("/sounds/mouse-click.mp3");
 
 function ProfileHeader() {
   const { logOut, authUser, updateProfile } = useAuthStore();
-  const { isSoundEnabled, toggleSound } = useChatStore();
+  const { isSoundEnable, toggleSound } = useChatStore();
   const [selectedImg, setSelectedImg] = useState(null);
 
   const fileInputRef = useRef(null);
@@ -86,7 +86,7 @@ function ProfileHeader() {
               toggleSound();
             }}
           >
-            {isSoundEnabled ? (
+            {isSoundEnable ? (
               <Volume2Icon className="size-5" />
             ) : (
               <VolumeOffIcon className="size-5" />
