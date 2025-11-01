@@ -1,11 +1,11 @@
-import { useChatStore } from '../store/useChatStore'
-import BorderAnimatedContainer from '../components/BorderAnimatedContainer'
-import ProfileHeader from '../components/ProfileHeader'
-import ActiveTabSwitch from '../components/ActiveTabSwitch'
-import ChatList from '../components/ChatList'
-import ContactList from '../components/ContactList'
-import ChatContainer from '../components/ChatContainer'
-import NoConversation from '../components/NoConversation'
+import { useChatStore } from "../store/useChatStore";
+import BorderAnimatedContainer from "../components/BorderAnimatedContainer";
+import ProfileHeader from "../components/ProfileHeader";
+import ActiveTabSwitch from "../components/ActiveTabSwitch";
+import ChatList from "../components/ChatList";
+import ContactList from "../components/ContactList";
+import ChatContainer from "../components/ChatContainer";
+import NoConversation from "../components/NoConversation";
 function ChatPage() {
   const { activeTab, selectedUser } = useChatStore();
   return (
@@ -18,12 +18,12 @@ function ChatPage() {
             {activeTab === "chats" ? <ChatList /> : <ContactList />}
           </div>
         </div>
-        <div className='flex-1 flex flex-col bg-slate-900/50 backdrop-blur-sm'>
+        <div className="flex-1 flex flex-col bg-slate-900/50 backdrop-blur-sm">
           {selectedUser ? <ChatContainer /> : <NoConversation />}
         </div>
       </BorderAnimatedContainer>
     </div>
-  )
+  );
 }
 
-export default ChatPage
+export default ChatPage;

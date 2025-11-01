@@ -8,7 +8,9 @@ function ActiveTabSwitch() {
       <button
         onClick={() => setActiveTabs("chats")}
         className={`tab ${
-          activeTab === "chats" ? "bg-cyan-500/20 text-cyan-400" : "text-slate-400"
+          activeTab === "chats"
+            ? "bg-cyan-500/20 text-cyan-400"
+            : "text-slate-400"
         }`}
       >
         Chats
@@ -17,7 +19,9 @@ function ActiveTabSwitch() {
       <button
         onClick={() => setActiveTabs("contacts")}
         className={`tab ${
-          activeTab === "contacts" ? "bg-cyan-500/20 text-cyan-400" : "text-slate-400"
+          activeTab === "contacts"
+            ? "bg-cyan-500/20 text-cyan-400"
+            : "text-slate-400"
         }`}
       >
         Contacts

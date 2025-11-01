@@ -46,9 +46,7 @@ function SignUpPage() {
                 <form onSubmit={handleSubmit} className="space-y-6">
                   {/* FULL NAME */}
                   <div>
-                    <label className="auth-input-label">
-                      Full Name
-                    </label>
+                    <label className="auth-input-label">Full Name</label>
                     <div className="relative">
                       <UserIcon className="auth-input-icon" />
                       <input
@@ -65,9 +63,7 @@ function SignUpPage() {
 
                   {/* EMAIL */}
                   <div>
-                    <label className="auth-input-label">
-                      Email
-                    </label>
+                    <label className="auth-input-label">Email</label>
                     <div className="relative">
                       <MailIcon className="auth-input-icon" />
                       <input
@@ -84,9 +80,7 @@ function SignUpPage() {
 
                   {/* PASSWORD */}
                   <div>
-                    <label className="auth-input-label">
-                      Password
-                    </label>
+                    <label className="auth-input-label">Password</label>
                     <div className="relative">
                       <LockIcon className="auth-input-icon" />
                       <input

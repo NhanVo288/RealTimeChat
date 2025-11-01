@@ -42,12 +42,9 @@ function LoginPage() {
 
                 {/* FORM */}
                 <form onSubmit={handleSubmit} className="space-y-6">
-
                   {/* EMAIL */}
                   <div>
-                    <label className="auth-input-label">
-                      Email
-                    </label>
+                    <label className="auth-input-label">Email</label>
                     <div className="relative">
                       <MailIcon className="auth-input-icon" />
                       <input
@@ -64,9 +61,7 @@ function LoginPage() {
 
                   {/* PASSWORD */}
                   <div>
-                    <label className="auth-input-label">
-                      Password
-                    </label>
+                    <label className="auth-input-label">Password</label>
                     <div className="relative">
                       <LockIcon className="auth-input-icon" />
                       <input
