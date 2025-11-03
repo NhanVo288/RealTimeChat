@@ -1,9 +1,11 @@
 import { ArrowLeft, X } from "lucide-react";
 import { useChatStore } from "../store/useChatStore";
+import { useAuthStore } from "../store/useAuthStore";
 
 const ChatHeader = () => {
   const { selectedUser, setSelectedUser } = useChatStore();
-
+  const { onlineUsers } = useAuthStore();
+  const isOnline = onlineUsers.includes(selectedUser._id);
   if (!selectedUser) return null;
 
   return (
@@ -30,13 +32,21 @@ const ChatHeader = () => {
           <span className="text-white font-medium tracking-wide">
             {selectedUser.fullName}
           </span>
-          <span className="text-xs text-slate-400 flex items-center gap-1">
-            <span className="relative flex space-x-1">
-              <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-bounce"></span>
+
+          {isOnline ? (
+            <span className="text-xs text-green-400 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-bounce"></span>{" "}
               <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-bounce delay-150"></span>
+              Online
             </span>
-            Online
-          </span>
+          ) : (
+            <span className="text-xs text-slate-400 flex items-center gap-1">
+              <span className="relative flex">
+                <span className="w-2 h-2 bg-slate-500 rounded-full" />
+              </span>
+              Offline
+            </span>
+          )}
         </div>
       </div>
 
