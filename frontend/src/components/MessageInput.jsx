@@ -61,7 +61,7 @@ function MessageInput() {
       )}
       <form
         onSubmit={handleSendMessage}
-        className="max-w-3xl mx-auto flex items-center gap-3 p-3 bg-slate-800/40 border border-slate-700/50 backdrop-blur-xl rounded-xl shadow-lg"
+        className="max-w-3xl mx-auto flex items-center gap-3  shadow-lg"
       >
         {/* Image Upload Btn */}
         <label className="cursor-pointer text-slate-400 hover:text-cyan-400 transition">
