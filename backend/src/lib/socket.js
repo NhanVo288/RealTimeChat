@@ -16,6 +16,10 @@ const io = new Server(server, {
 //apply authentication middleware
 io.use(socketAuthMiddleware)
 
+// kiem tra user on hay off
+export function getReceiverSockerId(userId) {
+    return userSocketMap[userId]
+}
 // store online users
 const userSocketMap = {} //{userId : socketId}
 
