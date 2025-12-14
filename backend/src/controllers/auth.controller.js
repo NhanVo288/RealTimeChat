@@ -85,7 +85,15 @@ export const login = async (req, res) => {
 };
 
 export const logout = (_, res) => {
-  res.cookie("jwt", "", { maxAge: 0 });
+  res.cookie(
+    "jwt",
+    {
+      httpOnly: true,
+      sameSite: "none",
+      secure: true,
+    },
+    { maxAge: 0 }
+  );
   res.status(200).json({ message: "Logout Successfully" });
 };
 
@@ -101,8 +109,8 @@ export const updateProfile = async (req, res) => {
       { profilePic: uploadRes.secure_url },
       { new: true }
     );
-    res.status(200).json(updateUser)
+    res.status(200).json(updateUser);
   } catch (error) {
-    console.log(error)
+    console.log(error);
   }
 };
