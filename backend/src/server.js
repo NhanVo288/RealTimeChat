@@ -32,6 +32,7 @@ app.use(cors({
   },
   credentials: true
 }));
+app.options("*", cors());
 app.use(cookieParser());
 app.use("/api/auth", authRoute);
 app.use("/api/messages", messageRoute);
