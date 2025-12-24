@@ -12,13 +12,13 @@ dotenv.config();
 
 const __dirname = path.resolve();
 const PORT = ENV.PORT;
-const allowedOrigins = [
-  "http://localhost:5173",          // frontend dev
-  "https://admin-36.up.railway.app" // production
-];
+// const allowedOrigins = [
+//   "http://localhost:5173",          // frontend dev
+//   "https://admin-36.up.railway.app" // production
+// ];
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
-// app.use(cors({ origin: ENV.CLIENT_URL, credentials: true }));
+app.use(cors({ origin: ENV.CLIENT_URL, credentials: true }));
 app.use(cors({
   origin: function(origin, callback) {
     // cho phép Postman, curl, mobile app (không có origin)
