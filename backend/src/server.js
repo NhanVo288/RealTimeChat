@@ -12,26 +12,26 @@ dotenv.config();
 
 const __dirname = path.resolve();
 const PORT = ENV.PORT;
-// const allowedOrigins = [
-//   "http://localhost:5173",          // frontend dev
-//   "https://admin-36.up.railway.app" // production
-// ];
+const allowedOrigins = [
+  "http://localhost:5173",          // frontend dev
+  "https://admin-36.up.railway.app" // production
+];
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
-app.use(cors({ origin: ENV.CLIENT_URL, credentials: true }));
-// app.use(cors({
-//   origin: function(origin, callback) {
-//     // cho phép Postman, curl, mobile app (không có origin)
-//     if (!origin) return callback(null, true);
+// app.use(cors({ origin: ENV.CLIENT_URL, credentials: true }));
+app.use(cors({
+  origin: function(origin, callback) {
+    if (!origin) return callback(null, true);
 
-//     if (allowedOrigins.includes(origin)) {
-//       callback(null, true);
-//     } else {
-//       callback(new Error("Not allowed by CORS"));
-//     }
-//   },
-//   credentials: true
-// }));
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    // từ chối nhẹ nhàng
+    return callback(null, false);
+  },
+  credentials: true
+}));
 app.options("*", cors());
 app.use(cookieParser());
 app.use("/api/auth", authRoute);
