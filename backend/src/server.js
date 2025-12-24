@@ -26,8 +26,6 @@ app.use(cors({
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-
-    // từ chối nhẹ nhàng
     return callback(null, false);
   },
   credentials: true
