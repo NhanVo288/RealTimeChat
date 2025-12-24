@@ -19,19 +19,19 @@ const PORT = ENV.PORT;
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 app.use(cors({ origin: ENV.CLIENT_URL, credentials: true }));
-app.use(cors({
-  origin: function(origin, callback) {
-    // cho phép Postman, curl, mobile app (không có origin)
-    if (!origin) return callback(null, true);
+// app.use(cors({
+//   origin: function(origin, callback) {
+//     // cho phép Postman, curl, mobile app (không có origin)
+//     if (!origin) return callback(null, true);
 
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
-  },
-  credentials: true
-}));
+//     if (allowedOrigins.includes(origin)) {
+//       callback(null, true);
+//     } else {
+//       callback(new Error("Not allowed by CORS"));
+//     }
+//   },
+//   credentials: true
+// }));
 app.options("*", cors());
 app.use(cookieParser());
 app.use("/api/auth", authRoute);
