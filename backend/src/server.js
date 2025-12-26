@@ -14,7 +14,8 @@ const __dirname = path.resolve();
 const PORT = ENV.PORT;
 const allowedOrigins = [
   "http://localhost:5173",          // frontend dev
-  "https://admin-36.up.railway.app" // production
+  "https://admin-36.up.railway.app"
+  "http://localhost:3000" // production
 ];
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
