@@ -15,6 +15,7 @@ const PORT = ENV.PORT;
 const allowedOrigins = [
   "http://localhost:5173",          // frontend dev
   "https://admin-36.up.railway.app",
+  "https://shop-36.up.railway.app",
   "http://localhost:3000"
 ];
 app.use(express.json({ limit: "10mb" }));
