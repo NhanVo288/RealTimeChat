@@ -11,12 +11,10 @@ function ChatPage() {
   const { activeTab, selectedUser, setSelectedUser } = useChatStore();
 
   return (
-    // Chiều cao linh hoạt: Mobile là 100vh, Desktop là cố định 800px
     <div className="relative w-full max-w-6xl h-screen md:h-[800px]">
       <BorderAnimatedContainer>
         <div className="flex h-full w-full">
           
-          {/* SIDEBAR: Ẩn trên mobile nếu đang mở chat */}
           <div className={`${selectedUser ? "hidden" : "flex"} md:flex w-full md:w-80 bg-slate-800/50 backdrop-blur-sm flex-col border-r border-slate-700/50`}>
             <ProfileHeader />
             <ActiveTabSwitch />
@@ -25,11 +23,9 @@ function ChatPage() {
             </div>
           </div>
 
-          {/* CHAT AREA: Ẩn trên mobile nếu chưa chọn user */}
           <div className={`${!selectedUser ? "hidden" : "flex"} md:flex flex-1 flex-col bg-slate-900/50 backdrop-blur-sm relative`}>
             {selectedUser ? (
               <>
-                {/* Nút quay lại chỉ hiện trên Mobile */}
                 <button 
                   onClick={() => setSelectedUser(null)}
                   className="absolute top-4 left-4 z-50 md:hidden p-2 bg-slate-700 rounded-full text-white"
