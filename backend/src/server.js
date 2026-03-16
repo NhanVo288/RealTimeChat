@@ -36,6 +36,9 @@ app.options("*", cors());
 app.use(cookieParser());
 app.use("/api/auth", authRoute);
 app.use("/api/messages", messageRoute);
+app.get("/",(req,res) => {
+  res.status(200).json({status: "true"})
+})
 
 if (ENV.NODE_ENV === "production") {
   app.use(express.static(path.join(__dirname, "../frontend/dist")));
