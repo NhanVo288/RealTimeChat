@@ -36,7 +36,7 @@ app.options("*", cors());
 app.use(cookieParser());
 app.use("/api/auth", authRoute);
 app.use("/api/messages", messageRoute);
-app.get("/",(req,res) => {
+app.get("/health",(req,res) => {
   res.status(200).json({status: "true"})
 })
 
