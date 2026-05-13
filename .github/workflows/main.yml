@@ -1,15 +1,14 @@
-# Simulated daily request to your render project so that the service doesn't go down
-name: Daily render ping
+name: Keep Render Awake
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # every 15 minutes
-  workflow_dispatch:  # Allows manual triggering
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
 
 jobs:
-  curl-website:
+  ping:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Run cURL on Website
-        run: curl -I https://realtimechat-7oar.onrender.com/health
+      - name: Ping Render app
+        run: curl --fail --silent https://realtimechat-7oar.onrender.com/health
