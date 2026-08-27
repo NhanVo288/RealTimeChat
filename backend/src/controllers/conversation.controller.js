@@ -9,11 +9,8 @@ import {
   publishUserEvent,
   publishUsersEvent,
 } from "../services/event.service.js";
-import {
-  createMessage,
-  getMessagesPage,
-  toClientMessage,
-} from "../services/message.service.js";
+import { createMessage, toClientMessage } from "../services/message.service.js";
+import { getMessagePage } from "../services/message-pagination.service.js";
 
 const publicUserFields = "-password";
 
@@ -99,13 +96,11 @@ export const getConversationMessages = async (req, res) => {
   try {
     const conversation = await requireConversationMember(req.params.id, req.user._id);
     if (!conversation) return res.status(404).json({ message: "Conversation not found" });
-    const result = await getMessagesPage(conversation._id, req.query);
-    return res.status(200).json(result);
+    const page = await getMessagePage(conversation._id, req.query);
+    return res.status(200).json(page);
   } catch (error) {
     console.error("Get conversation messages error:", error);
-    return res.status(error.statusCode || 500).json({
-      message: error.statusCode ? error.message : "Server error",
-    });
+    return res.status(500).json({ message: "Server error" });
   }
 };
 

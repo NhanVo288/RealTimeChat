@@ -1,16 +1,14 @@
 import { getReceiverSockerId, io } from "../lib/socket.js";
 import Conversation from "../model/Conversation.js";
 import ConversationMember from "../model/ConversationMember.js";
+import Message from "../model/Message.js";
 import User from "../model/User.js";
 import {
   getDirectConversation,
   getOrCreateDirectConversation,
 } from "../services/conversation.service.js";
-import {
-  createMessage,
-  getMessagesPage,
-  toClientMessage,
-} from "../services/message.service.js";
+import { createMessage, toClientMessage } from "../services/message.service.js";
+import { getMessagePage } from "../services/message-pagination.service.js";
 
 const publicUserFields = "-password";
 
@@ -38,13 +36,11 @@ export const getChatByUserId = async (req, res) => {
 
     const conversation = await getDirectConversation(req.user._id, otherUserId);
     if (!conversation) return res.status(200).json([]);
-    const result = await getMessagesPage(conversation._id, req.query);
-    return res.status(200).json(result);
+    const page = await getMessagePage(conversation._id, req.query);
+    return res.status(200).json(page);
   } catch (error) {
     console.error("Get messages error:", error);
-    return res.status(error.statusCode || 500).json({
-      message: error.statusCode ? error.message : "Server error",
-    });
+    return res.status(500).json({ message: "Server error" });
   }
 };
 

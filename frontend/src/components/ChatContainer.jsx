@@ -1,10 +1,10 @@
 import React, { useEffect, useRef } from "react";
 import { useChatStore } from "../store/useChatStore";
-import { useAuthStore } from "../../auth/store/useAuthStore";
+import { useAuthStore } from "../store/useAuthStore";
 import ChatHeader from "./ChatHeader";
 import NoChatHolder from "./NoChatHolder";
 import MessageInput from "./MessageInput";
-import MessageSkeleton from "../../../shared/components/MessageLoading";
+import MessageSkeleton from "./MessageLoading";
 
 export default function ChatContainer() {
   const {
@@ -12,21 +12,14 @@ export default function ChatContainer() {
     getMessagesBySelection,
     messages,
     isMessagesLoading,
-    isLoadingOlderMessages,
-    hasMoreMessages,
-    loadOlderMessages,
     subscribeToMessage,
     unsubscribeMessage,
   } = useChatStore();
   const { authUser } = useAuthStore();
-  const messagesContainer = useRef(null);
-  const shouldScrollToLatest = useRef(false);
-  const previousLatestMessageId = useRef(null);
+  const messageEndScroll = useRef(null);
   useEffect(() => {
     if (!selectedUser) return;
 
-    shouldScrollToLatest.current = true;
-    previousLatestMessageId.current = null;
     getMessagesBySelection(selectedUser);
     subscribeToMessage();
 
@@ -34,48 +27,21 @@ export default function ChatContainer() {
   }, [selectedUser, getMessagesBySelection, subscribeToMessage, unsubscribeMessage]);
 
   useEffect(() => {
-    if (isMessagesLoading || isLoadingOlderMessages || !messagesContainer.current) return;
-
-    const latestMessageId = messages.at(-1)?._id || null;
-    const latestMessageChanged = latestMessageId !== previousLatestMessageId.current;
-    if (shouldScrollToLatest.current || latestMessageChanged) {
-      requestAnimationFrame(() => {
-        if (messagesContainer.current) {
-          messagesContainer.current.scrollTop = messagesContainer.current.scrollHeight;
-        }
-      });
-      shouldScrollToLatest.current = false;
+    if (messageEndScroll.current) {
+      messageEndScroll.current.scrollIntoView({ behavior: "smooth" });
     }
-    previousLatestMessageId.current = latestMessageId;
-  }, [messages, isMessagesLoading, isLoadingOlderMessages]);
-
-  const handleMessagesScroll = async () => {
-    const container = messagesContainer.current;
-    if (!container || container.scrollTop > 80 || !hasMoreMessages || isLoadingOlderMessages) return;
-
-    const previousHeight = container.scrollHeight;
-    await loadOlderMessages();
-    requestAnimationFrame(() => {
-      container.scrollTop += container.scrollHeight - previousHeight;
-    });
-  };
+  }, [messages]);
 
   return (
     <>
       <ChatHeader />
-      <div
-        ref={messagesContainer}
-        onScroll={handleMessagesScroll}
-        className="relative z-0 flex-1 overflow-y-auto px-6 py-8"
-      >
-        {isLoadingOlderMessages && (
-          <p className="mb-4 text-center text-xs text-slate-500">Đang tải tin cũ...</p>
-        )}
+      <div className="relative z-0 flex-1 px-6 overflow-y-auto py-8 ">
         {messages.length > 0 && !isMessagesLoading ? (
           <div className="max-w-3xl mx-auto space-y-6">
             {messages.map((msg) => {
               return (
                 <div
+                  ref={messageEndScroll}
                   key={msg._id}
                   className={`chat ${
                     msg.senderId === authUser._id ? "chat-end" : "chat-start"

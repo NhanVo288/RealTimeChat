@@ -38,30 +38,3 @@ export const createMessage = async ({ conversationId, senderId, text, image }) =
     attachments,
   });
 };
-
-export const getMessagesPage = async (conversationId, { before, limit = 30 } = {}) => {
-  const pageSize = Math.min(Math.max(Number(limit) || 30, 1), 100);
-  const query = { conversationId };
-  if (before) {
-    const beforeDate = new Date(before);
-    if (Number.isNaN(beforeDate.getTime())) {
-      const error = new Error("Invalid cursor");
-      error.statusCode = 400;
-      throw error;
-    }
-    query.createdAt = { $lt: beforeDate };
-  }
-
-  const messages = await Message.find(query)
-    .sort({ createdAt: -1 })
-    .limit(pageSize + 1)
-    .lean();
-  const hasMore = messages.length > pageSize;
-  const page = messages.slice(0, pageSize).reverse();
-
-  return {
-    messages: page.map(toClientMessage),
-    hasMore,
-    nextCursor: page[0]?.createdAt?.toISOString() || null,
-  };
-};

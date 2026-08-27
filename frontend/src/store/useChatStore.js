@@ -1,13 +1,12 @@
 import { create } from "zustand";
-import { axiosInstance } from "../../../shared/lib/axios";
+import { axiosInstance } from "../lib/axios";
 import toast from "react-hot-toast";
-import { useAuthStore } from "../../auth/store/useAuthStore";
+import { useAuthStore } from "./useAuthStore";
 
 const notificationSound = new Audio("/sounds/notification.mp3");
 const eventsUrl = import.meta.env.MODE === "development"
   ? "http://localhost:3000/api/messages/events"
   : "/api/messages/events";
-const messagePageSize = 30;
 
 const getDirectUserId = (selection) => {
   if (selection?.type !== "group") {
@@ -16,14 +15,6 @@ const getDirectUserId = (selection) => {
     )?._id || selection?._id;
   }
   return selection._id;
-};
-
-const mergeMessages = (currentMessages, incomingMessages) => {
-  const messagesById = new Map(currentMessages.map((message) => [message._id, message]));
-  incomingMessages.forEach((message) => messagesById.set(message._id, message));
-  return [...messagesById.values()].sort(
-    (first, second) => new Date(first.createdAt) - new Date(second.createdAt)
-  );
 };
 
 export const useChatStore = create((set, get) => ({
@@ -37,9 +28,6 @@ export const useChatStore = create((set, get) => ({
   isMessagesLoading: false,
   isSoundEnable: JSON.parse(localStorage.getItem("isSoundEnable")) === true,
   conversationEventSource: null,
-  messageCursor: null,
-  hasMoreMessages: false,
-  isLoadingOlderMessages: false,
 
   toggleSound: () => {
     const newState = !get().isSoundEnable;
@@ -232,6 +220,7 @@ export const useChatStore = create((set, get) => ({
     }
   },
   getMessageByUser: async (userId) => {
+    set({ isMessagesLoading: true });
     try {
       const res = await axiosInstance.get(`/messages/${userId}`);
       set({ messages: res.data });
@@ -242,55 +231,17 @@ export const useChatStore = create((set, get) => ({
     }
   },
   getMessagesBySelection: async (selection) => {
-    set({
-      messages: [],
-      messageCursor: null,
-      hasMoreMessages: false,
-      isMessagesLoading: true,
-    });
+    set({ isMessagesLoading: true });
     try {
       const url = selection.type === "group"
         ? `/messages/conversations/${selection._id}`
         : `/messages/${getDirectUserId(selection)}`;
-      const res = await axiosInstance.get(url, { params: { limit: messagePageSize } });
-      const result = Array.isArray(res.data)
-        ? { messages: res.data, hasMore: false, nextCursor: null }
-        : res.data;
-      set({
-        messages: result.messages || [],
-        messageCursor: result.nextCursor,
-        hasMoreMessages: result.hasMore,
-      });
+      const res = await axiosInstance.get(url);
+      set({ messages: res.data });
     } catch (error) {
       toast.error(error.response?.data?.message || "Không thể tải tin nhắn");
     } finally {
       set({ isMessagesLoading: false });
-    }
-  },
-  loadOlderMessages: async () => {
-    const { selectedUser, messageCursor, hasMoreMessages, isLoadingOlderMessages } = get();
-    if (!selectedUser || !messageCursor || !hasMoreMessages || isLoadingOlderMessages) return;
-    set({ isLoadingOlderMessages: true });
-    try {
-      const url = selectedUser.type === "group"
-        ? `/messages/conversations/${selectedUser._id}`
-        : `/messages/${getDirectUserId(selectedUser)}`;
-      const res = await axiosInstance.get(url, {
-        params: { limit: messagePageSize, before: messageCursor },
-      });
-      const result = Array.isArray(res.data)
-        ? { messages: res.data, hasMore: false, nextCursor: null }
-        : res.data;
-      const messages = mergeMessages(get().messages, result.messages || []);
-      set({
-        messages,
-        messageCursor: result.nextCursor,
-        hasMoreMessages: result.hasMore,
-      });
-    } catch (error) {
-      toast.error(error.response?.data?.message || "Không thể tải thêm tin nhắn");
-    } finally {
-      set({ isLoadingOlderMessages: false });
     }
   },
   sendMessage: async (payload) => {
@@ -377,8 +328,7 @@ export const useChatStore = create((set, get) => ({
         : newMessage.senderId === getDirectUserId(selectedUser);
       if (!belongsToSelection) return;
       const currentMessage = get().messages;
-      const messages = mergeMessages(currentMessage, [newMessage]);
-      set({ messages });
+      set({ messages: [...currentMessage, newMessage] });
       if (isSoundEnable) {
         notificationSound.currentTime = 0;
         notificationSound.play().catch((e) => console.log("Audio error", e));
