@@ -1,10 +1,10 @@
 import { Routes, Route, Navigate } from "react-router";
-import LoginPage from "./pages/LoginPage";
-import ChatPage from "./pages/ChatPage";
-import SignUpPage from "./pages/SignUpPage";
-import { useAuthStore } from "./store/useAuthStore";
+import LoginPage from "./features/auth/pages/LoginPage";
+import ChatPage from "./features/chat/pages/ChatPage";
+import SignUpPage from "./features/auth/pages/SignUpPage";
+import { useAuthStore } from "./features/auth/store/useAuthStore";
 import { useEffect } from "react";
-import Loader from "./components/Loader";
+import Loader from "./shared/components/Loader";
 import { Toaster } from "react-hot-toast";
 export default function App() {
   const { checkAuth, isCheckingAuth, authUser, connectSocket } = useAuthStore();
@@ -12,7 +12,7 @@ export default function App() {
     if (authUser) {
       connectSocket();
     }
-  }, [authUser]);
+  }, [authUser, connectSocket]);
   useEffect(() => {
     checkAuth();
   }, [checkAuth]);

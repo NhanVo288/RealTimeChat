@@ -5,8 +5,8 @@ import { sendWelcomeEmail } from "../email/emailHandler.js";
 import { ENV } from "../lib/env.js";
 import cloudinary from "../lib/cloudinary.js";
 export const signUp = async (req, res) => {
-  const { fullName, email, password } = req.body;
   try {
+    const { fullName, email, password } = req.body;
     if (!fullName || !email || !password) {
       return res.status(400).json({ message: "All fields are required" });
     }
@@ -22,51 +22,43 @@ export const signUp = async (req, res) => {
       return res.status(400).json({ message: "Invalid Email Format" });
     }
 
-    const user = await User.findOne({ email });
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await User.findOne({ email: normalizedEmail });
     if (user) return res.status(400).json({ message: "Email already exists" });
 
     const salt = await bcrypt.genSalt(10);
     const hashPassword = await bcrypt.hash(password, salt);
     const newUser = new User({
       fullName,
-      email,
+      email: normalizedEmail,
       password: hashPassword,
     });
 
-    if (newUser) {
-      const saveUser = await newUser.save();
-      generateToken(saveUser._id, res);
-      res.status(201).json({
-        _id: saveUser._id,
-        fullName: saveUser.fullName,
-        email: saveUser.email,
-        profilePic: saveUser.profilePic,
-      });
-      try {
-        await sendWelcomeEmail(
-          saveUser.email,
-          saveUser.fullName,
-          ENV.CLIENT_URL
-        );
-      } catch (error) {
-        console.log("Error", error);
-      }
-    } else {
-      return res.status(400).json({ message: "Invalid User" });
-    }
+    const saveUser = await newUser.save();
+    generateToken(saveUser._id, res);
+    res.status(201).json({
+      _id: saveUser._id,
+      fullName: saveUser.fullName,
+      email: saveUser.email,
+      profilePic: saveUser.profilePic,
+    });
+    sendWelcomeEmail(saveUser.email, saveUser.fullName, ENV.CLIENT_URL).catch(
+      (error) => console.error("Welcome email error:", error)
+    );
   } catch (error) {
-    console.log(error);
+    console.error("Sign up error:", error);
+    return res.status(500).json({ message: "Server error" });
   }
 };
 
 export const login = async (req, res) => {
-  const { email, password } = req.body;
   try {
+    const { email, password } = req.body;
     if (!email || !password)
       return res
         .status(400)
         .json({ message: "Email and Password are required" });
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: email.trim().toLowerCase() });
     if (!user) return res.status(400).json({ message: "Invalid credentials" });
 
     const isPasswordCorrect = await bcrypt.compare(password, user.password);
@@ -80,7 +72,8 @@ export const login = async (req, res) => {
       profilePic: user.profilePic,
     });
   } catch (error) {
-    console.log(error);
+    console.error("Login error:", error);
+    return res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -110,6 +103,7 @@ export const updateProfile = async (req, res) => {
     );
     res.status(200).json(updateUser);
   } catch (error) {
-    console.log(error);
+    console.error("Update profile error:", error);
+    return res.status(500).json({ message: "Server error" });
   }
 };

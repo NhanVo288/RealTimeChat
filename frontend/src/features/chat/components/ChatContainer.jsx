@@ -1,41 +1,63 @@
 import React, { useEffect, useRef } from "react";
 import { useChatStore } from "../store/useChatStore";
-import { useAuthStore } from "../store/useAuthStore";
+import { useAuthStore } from "../../auth/store/useAuthStore";
 import ChatHeader from "./ChatHeader";
 import NoChatHolder from "./NoChatHolder";
 import MessageInput from "./MessageInput";
-import MessageSkeleton from "./MessageLoading";
+import MessageSkeleton from "../../../shared/components/MessageLoading";
 
 export default function ChatContainer() {
   const {
     selectedUser,
-    getMessageByUser,
+    getMessagesBySelection,
     messages,
     isMessagesLoading,
+    isLoadingOlderMessages,
+    hasMoreMessages,
+    loadOlderMessages,
     subscribeToMessage,
     unsubscribeMessage,
   } = useChatStore();
   const { authUser } = useAuthStore();
   const messageEndScroll = useRef(null);
+  const messagesContainer = useRef(null);
   useEffect(() => {
     if (!selectedUser) return;
 
-    getMessageByUser(selectedUser._id);
+    getMessagesBySelection(selectedUser);
     subscribeToMessage();
 
     return () => unsubscribeMessage();
-  }, [selectedUser, getMessageByUser, subscribeToMessage, unsubscribeMessage]);
+  }, [selectedUser, getMessagesBySelection, subscribeToMessage, unsubscribeMessage]);
 
   useEffect(() => {
     if (messageEndScroll.current) {
-      messageEndScroll.current.scrollIntoView({ behavior: "smooth" });
+      messageEndScroll.current.scrollIntoView({ behavior: "auto" });
     }
-  }, [messages]);
+  }, [selectedUser]);
+
+  const handleMessagesScroll = async () => {
+    const container = messagesContainer.current;
+    if (!container || container.scrollTop > 80 || !hasMoreMessages || isLoadingOlderMessages) return;
+
+    const previousHeight = container.scrollHeight;
+    await loadOlderMessages();
+    requestAnimationFrame(() => {
+      container.scrollTop += container.scrollHeight - previousHeight;
+    });
+  };
 
   return (
     <>
       <ChatHeader />
-      <div className="flex-1 px-6 overflow-y-auto py-8 ">
+      <div
+        ref={messagesContainer}
+        onScroll={handleMessagesScroll}
+        className="relative z-0 flex-1 overflow-y-auto px-6 py-8"
+      >
+        {isLoadingOlderMessages && (
+          <p className="mb-4 text-center text-xs text-slate-500">Đang tải tin cũ...</p>
+        )}
         {messages.length > 0 && !isMessagesLoading ? (
           <div className="max-w-3xl mx-auto space-y-6">
             {messages.map((msg) => {
@@ -78,7 +100,7 @@ export default function ChatContainer() {
         ) : isMessagesLoading ? (
           <MessageSkeleton />
         ) : (
-          <NoChatHolder name={selectedUser.fullName} />
+          <NoChatHolder name={selectedUser.type === "group" ? selectedUser.name : selectedUser.fullName} />
         )}
       </div>
       <MessageInput />

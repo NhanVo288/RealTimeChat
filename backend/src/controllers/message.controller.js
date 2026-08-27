@@ -1,83 +1,105 @@
-import cloudinary from "../lib/cloudinary.js";
 import { getReceiverSockerId, io } from "../lib/socket.js";
-import Message from "../model/Message.js";
+import Conversation from "../model/Conversation.js";
+import ConversationMember from "../model/ConversationMember.js";
 import User from "../model/User.js";
+import {
+  getDirectConversation,
+  getOrCreateDirectConversation,
+} from "../services/conversation.service.js";
+import {
+  createMessage,
+  getMessagesPage,
+  toClientMessage,
+} from "../services/message.service.js";
+
+const publicUserFields = "-password";
 
 export const getAllContacts = async (req, res) => {
   try {
-    const loggedUserId = req.user._id;
-    const filterdUser = await User.find({ _id: { $ne: loggedUserId } }).select(
-      "-password"
-    );
-    res.status(200).json(filterdUser);
+    const contacts = await User.find({ _id: { $ne: req.user._id } })
+      .select(publicUserFields)
+      .sort({ fullName: 1 });
+    return res.status(200).json(contacts);
   } catch (error) {
-    console.log(error);
-    res.status(500).json({ message: "SERVER ERROR" });
+    console.error("Get contacts error:", error);
+    return res.status(500).json({ message: "Server error" });
   }
 };
 
 export const getChatByUserId = async (req, res) => {
   try {
-    const myId = req.user._id;
-    const { id: userChatWith } = req.params;
-    //find:  i send orthers message or others send me message
-    const messages = await Message.find({
-      $or: [
-        { senderId: myId, receiverId: userChatWith },
-        { senderId: userChatWith, receiverId: myId },
-      ],
-    });
-    res.status(200).json(messages);
+    const { id: otherUserId } = req.params;
+    if (req.user._id.toString() === otherUserId) {
+      return res.status(400).json({ message: "You cannot chat with yourself" });
+    }
+    if (!(await User.exists({ _id: otherUserId }))) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const conversation = await getDirectConversation(req.user._id, otherUserId);
+    if (!conversation) return res.status(200).json([]);
+    const result = await getMessagesPage(conversation._id, req.query);
+    return res.status(200).json(result);
   } catch (error) {
-    console.log(error.message);
+    console.error("Get messages error:", error);
+    return res.status(error.statusCode || 500).json({
+      message: error.statusCode ? error.message : "Server error",
+    });
   }
 };
 
 export const sendMessage = async (req, res) => {
   try {
-    const { text, image } = req.body;
     const { id: receiverId } = req.params;
+    const { text = "", image = null } = req.body;
     const senderId = req.user._id;
 
-    let imageURL;
-    if (image) {
-      const uploadResponse = await cloudinary.uploader.upload(image);
-      imageURL = uploadResponse.secure_url;
+    if (senderId.toString() === receiverId) {
+      return res.status(400).json({ message: "You cannot message yourself" });
     }
-    const newMessage = new Message({
-      senderId,
-      receiverId,
-      text,
-      image: imageURL,
-    });
-    await newMessage.save();
+    if (!(await User.exists({ _id: receiverId }))) {
+      return res.status(404).json({ message: "Recipient not found" });
+    }
+    if (!text.trim() && !image) {
+      return res.status(400).json({ message: "Message cannot be empty" });
+    }
 
-    const receiverSocketId = getReceiverSockerId(receiverId)
-    if(receiverSocketId){
-      io.to(receiverSocketId).emit('newMessage',newMessage)
-    }
-    res.status(200).json(newMessage);
+    const conversation = await getOrCreateDirectConversation(senderId, receiverId);
+    const message = await createMessage({
+      conversationId: conversation._id,
+      senderId,
+      text,
+      image,
+    });
+    await Conversation.findByIdAndUpdate(conversation._id, {
+      lastMessage: message._id,
+      lastMessageAt: message.createdAt,
+    });
+
+    const clientMessage = toClientMessage(message);
+    const receiverSocketId = getReceiverSockerId(receiverId);
+    if (receiverSocketId) io.to(receiverSocketId).emit("newMessage", clientMessage);
+    return res.status(201).json(clientMessage);
   } catch (error) {
-    console.log(error.message);
+    console.error("Send message error:", error);
+    return res.status(500).json({ message: "Server error" });
   }
 };
 
 export const getChats = async (req, res) => {
   try {
-    const loggedUserId = req.user._id;
-    const messsages = await Message.find({
-      $or: [{ senderId: loggedUserId }, { receiverId: loggedUserId }],
-    });
-
-    const chatPartnerId = [...new Set(messsages.map((msg) =>
-      msg.senderId.toString() === loggedUserId.toString()
-        ? msg.receiverId.toString()
-        : msg.senderId.toString()
-    ))];
-
-    const chatPartners = await User.find({_id:{$in: chatPartnerId}}).select("-password")
-    res.status(200).json(chatPartners)
+    const conversationIds = await ConversationMember.find({ userId: req.user._id })
+      .distinct("conversationId");
+    const partnerIds = await ConversationMember.find({
+      conversationId: { $in: conversationIds },
+      userId: { $ne: req.user._id },
+    }).distinct("userId");
+    const chatPartners = await User.find({ _id: { $in: partnerIds } })
+      .select(publicUserFields)
+      .sort({ fullName: 1 });
+    return res.status(200).json(chatPartners);
   } catch (error) {
-    console.log(error)
+    console.error("Get chats error:", error);
+    return res.status(500).json({ message: "Server error" });
   }
 };
