@@ -42,9 +42,13 @@ export const decryptMessage = async (cipherText) => {
 
 export const decryptMessages = async (messages) => Promise.all(
   messages.map(async (message) => {
-    if (!message.isEncrypted || !message.text) return message;
+    if (!message.isEncrypted || !message.text || message._isDecrypted) return message;
     try {
-      return { ...message, text: await decryptMessage(message.text) };
+      return {
+        ...message,
+        text: await decryptMessage(message.text),
+        _isDecrypted: true,
+      };
     } catch {
       return { ...message, text: "Không thể giải mã tin nhắn" };
     }

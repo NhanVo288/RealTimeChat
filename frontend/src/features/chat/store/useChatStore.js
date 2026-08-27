@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { axiosInstance } from "../../../shared/lib/axios";
 import toast from "react-hot-toast";
 import { useAuthStore } from "../../auth/store/useAuthStore";
-import { decryptMessages, encryptMessage } from "../lib/crypto";
+import { decryptMessages, encryptMessage } from "../../../shared/lib/crypto";
 
 const notificationSound = new Audio("/sounds/notification.mp3");
 const eventsUrl = import.meta.env.VITE_EVENTS_URL ||
