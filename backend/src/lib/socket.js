@@ -7,7 +7,12 @@ import { ENV } from './env.js'
 import { socketAuthMiddleware } from '../middleware/socket.auth.middleware.js'
 
 const app = express()
-const server = ENV.TLS_KEY_PATH && ENV.TLS_CERT_PATH
+const hasTlsCertificates = ENV.TLS_KEY_PATH &&
+    ENV.TLS_CERT_PATH &&
+    fs.existsSync(ENV.TLS_KEY_PATH) &&
+    fs.existsSync(ENV.TLS_CERT_PATH)
+
+const server = hasTlsCertificates
     ? https.createServer({
         key: fs.readFileSync(ENV.TLS_KEY_PATH),
         cert: fs.readFileSync(ENV.TLS_CERT_PATH),

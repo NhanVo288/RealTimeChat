@@ -9,6 +9,7 @@ import {
 } from "../services/conversation.service.js";
 import { createMessage, toClientMessage } from "../services/message.service.js";
 import { getMessagePage } from "../services/message-pagination.service.js";
+import { publishUsersEvent } from "../services/event.service.js";
 
 const publicUserFields = "-password";
 
@@ -97,6 +98,75 @@ export const getChats = async (req, res) => {
     return res.status(200).json(chatPartners);
   } catch (error) {
     console.error("Get chats error:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+export const editMessage = async (req, res) => {
+  try {
+    const { text = "", isEncrypted = false } = req.body;
+    if (!text.trim()) return res.status(400).json({ message: "Message cannot be empty" });
+
+    const existingMessage = await Message.findOne({
+      _id: req.params.id,
+      senderId: req.user._id,
+      deletedAt: null,
+    });
+    if (!existingMessage) return res.status(404).json({ message: "Message not found" });
+    const isMember = await ConversationMember.exists({
+      conversationId: existingMessage.conversationId,
+      userId: req.user._id,
+    });
+    if (!isMember) return res.status(403).json({ message: "Not a conversation member" });
+
+    const message = await Message.findOneAndUpdate(
+      { _id: req.params.id, senderId: req.user._id, deletedAt: null },
+      { text: text.trim(), isEncrypted: Boolean(isEncrypted), editedAt: new Date() },
+      { new: true }
+    ).populate("senderId", "fullName profilePic");
+    if (!message) return res.status(404).json({ message: "Message not found" });
+
+    const payload = toClientMessage(message);
+    const memberIds = await ConversationMember.find({
+      conversationId: message.conversationId,
+    }).distinct("userId");
+    publishUsersEvent(memberIds, "message-updated", payload);
+    return res.status(200).json(payload);
+  } catch (error) {
+    console.error("Edit message error:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+export const deleteMessage = async (req, res) => {
+  try {
+    const existingMessage = await Message.findOne({
+      _id: req.params.id,
+      senderId: req.user._id,
+      deletedAt: null,
+    });
+    if (!existingMessage) return res.status(404).json({ message: "Message not found" });
+    const isMember = await ConversationMember.exists({
+      conversationId: existingMessage.conversationId,
+      userId: req.user._id,
+    });
+    if (!isMember) return res.status(403).json({ message: "Not a conversation member" });
+
+    const message = await Message.findOneAndUpdate(
+      { _id: req.params.id, senderId: req.user._id, deletedAt: null },
+      { text: "", isEncrypted: false, deletedAt: new Date(), editedAt: null },
+      { new: true }
+    ).populate("senderId", "fullName profilePic");
+    if (!message) return res.status(404).json({ message: "Message not found" });
+
+    const payload = toClientMessage(message);
+    const memberIds = await ConversationMember.find({
+      conversationId: message.conversationId,
+    }).distinct("userId");
+    publishUsersEvent(memberIds, "message-deleted", payload);
+    return res.status(200).json(payload);
+  } catch (error) {
+    console.error("Delete message error:", error);
     return res.status(500).json({ message: "Server error" });
   }
 };

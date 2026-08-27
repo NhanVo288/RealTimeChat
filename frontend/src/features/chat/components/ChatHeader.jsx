@@ -30,7 +30,10 @@ const ChatHeader = () => {
   const isAdmin = isGroup && selectedUser.members?.some(
     (member) => member._id === authUser?._id && member.role === "admin"
   );
-  const existingMemberIds = new Set(selectedUser.members?.map((member) => member._id));
+  const groupMembers = [...new Map(
+    (selectedUser.members || []).map((member) => [member._id, member])
+  ).values()];
+  const existingMemberIds = new Set(groupMembers.map((member) => member._id));
   const availableContacts = allContacts.filter((contact) => !existingMemberIds.has(contact._id));
 
   const handleDeleteGroup = async () => {
@@ -78,7 +81,7 @@ const ChatHeader = () => {
           </span>
 
           {isGroup ? (
-            <span className="text-xs text-slate-400">{selectedUser.members?.length || 0} thành viên</span>
+            <span className="text-xs text-slate-400">{groupMembers.length} thành viên</span>
           ) : isOnline ? (
             <span className="text-xs text-green-400 flex items-center gap-1">
               <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-bounce"></span>{" "}

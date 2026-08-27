@@ -4,6 +4,8 @@ import {
 	getChatByUserId,
 	sendMessage,
 	getChats,
+	editMessage,
+	deleteMessage,
 } from '../controllers/message.controller.js'
 import {
 	createGroup,
@@ -30,6 +32,8 @@ router.post("/conversations/:id/send", sendConversationMessage)
 router.delete("/conversations/:id", requireGroupAdmin, deleteGroup)
 router.delete("/conversations/:id/members/:memberId", requireGroupAdmin, removeGroupMember)
 router.post("/conversations/:id/members/:memberId", requireGroupAdmin, addGroupMember)
+router.patch("/:id", editMessage)
+router.delete("/:id", deleteMessage)
 router.get("/:id", getChatByUserId)
 router.post("/send/:id", sendMessage )
 

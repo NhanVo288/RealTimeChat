@@ -1,4 +1,6 @@
 import React, { useEffect, useRef } from "react";
+import { useState } from "react";
+import { Check, Pencil, RotateCcw, X } from "lucide-react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../../auth/store/useAuthStore";
 import ChatHeader from "./ChatHeader";
@@ -17,11 +19,15 @@ export default function ChatContainer() {
     loadOlderMessages,
     subscribeToMessage,
     unsubscribeMessage,
+    editMessage,
+    deleteMessage,
   } = useChatStore();
   const { authUser } = useAuthStore();
   const messagesContainer = useRef(null);
   const shouldScrollToLatest = useRef(false);
   const previousLatestMessageId = useRef(null);
+  const [editingMessageId, setEditingMessageId] = useState(null);
+  const [editingText, setEditingText] = useState("");
   useEffect(() => {
     if (!selectedUser) return;
 
@@ -60,6 +66,16 @@ export default function ChatContainer() {
     });
   };
 
+  const handleEditSubmit = async (event) => {
+    event.preventDefault();
+    if (!editingText.trim()) return;
+    const updated = await editMessage(editingMessageId, editingText.trim());
+    if (updated) {
+      setEditingMessageId(null);
+      setEditingText("");
+    }
+  };
+
   return (
     <>
       <ChatHeader />
@@ -94,7 +110,7 @@ export default function ChatContainer() {
                       )}
                     </div>
                   )}
-                  <div className={`flex max-w-[78%] flex-col ${isOwnMessage ? "items-end" : "items-start"}`}>
+                  <div className={`group flex max-w-[78%] flex-col ${isOwnMessage ? "items-end" : "items-start"}`}>
                     {showSender && msg.sender && (
                       <span className="mb-1 ml-1 text-[11px] font-medium text-slate-400">
                         {msg.sender.fullName}
@@ -107,6 +123,28 @@ export default function ChatContainer() {
                           : "rounded-bl-md border border-slate-700/70 bg-slate-800/90 text-slate-200"
                       }`}
                     >
+                    {editingMessageId === msg._id ? (
+                      <form onSubmit={handleEditSubmit} className="flex min-w-56 items-center gap-2">
+                        <input
+                          value={editingText}
+                          onChange={(event) => setEditingText(event.target.value)}
+                          autoFocus
+                          className="min-w-0 flex-1 rounded bg-white/10 px-2 py-1 text-sm text-white outline-none"
+                        />
+                        <button type="submit" title="Lưu" className="text-white hover:text-cyan-200"><Check size={15} /></button>
+                        <button
+                          type="button"
+                          title="Hủy"
+                          onClick={() => setEditingMessageId(null)}
+                          className="text-white hover:text-red-200"
+                        >
+                          <X size={15} />
+                        </button>
+                      </form>
+                    ) : msg.deletedAt ? (
+                      <p className="italic opacity-60">Tin nhắn đã thu hồi</p>
+                    ) : (
+                      <>
                     {msg.image && (
                       <img
                         src={msg.image}
@@ -123,7 +161,30 @@ export default function ChatContainer() {
                         minute: "2-digit",
                       })}
                     </p>
+                      </>
+                    )}
                     </div>
+                    {isOwnMessage && !msg.deletedAt && editingMessageId !== msg._id && (
+                      <div className="mt-1 flex gap-1 opacity-0 transition group-hover:opacity-100">
+                        <button
+                          title="Sửa tin nhắn"
+                          onClick={() => {
+                            setEditingMessageId(msg._id);
+                            setEditingText(msg.text || "");
+                          }}
+                          className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-cyan-300"
+                        >
+                          <Pencil size={13} />
+                        </button>
+                        <button
+                          title="Thu hồi tin nhắn"
+                          onClick={() => deleteMessage(msg._id)}
+                          className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-red-300"
+                        >
+                          <RotateCcw size={13} />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               );

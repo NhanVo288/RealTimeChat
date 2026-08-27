@@ -28,6 +28,10 @@ const mergeMessages = (currentMessages, incomingMessages) => {
   );
 };
 
+const uniqueMembers = (members = []) => [
+  ...new Map(members.map((member) => [member._id, member])).values(),
+];
+
 export const useChatStore = create((set, get) => ({
   allContacts: [],
   chats: [],
@@ -70,9 +74,7 @@ export const useChatStore = create((set, get) => ({
         const updateConversation = (conversation) => conversation._id === conversationId
           ? {
               ...conversation,
-              members: conversation.members.some((item) => item._id === member._id)
-                ? conversation.members
-                : [...conversation.members, member],
+              members: uniqueMembers([...conversation.members, member]),
             }
           : conversation;
         return {
@@ -92,10 +94,20 @@ export const useChatStore = create((set, get) => ({
       } else {
         set((state) => ({
           conversations: state.conversations.map((conversation) => conversation._id === conversationId
-            ? { ...conversation, members: conversation.members.filter((member) => member._id !== memberId) }
+            ? {
+                ...conversation,
+                members: uniqueMembers(
+                  conversation.members.filter((member) => member._id !== memberId)
+                ),
+              }
             : conversation),
           selectedUser: state.selectedUser?._id === conversationId
-            ? { ...state.selectedUser, members: state.selectedUser.members.filter((member) => member._id !== memberId) }
+            ? {
+                ...state.selectedUser,
+                members: uniqueMembers(
+                  state.selectedUser.members.filter((member) => member._id !== memberId)
+                ),
+              }
             : state.selectedUser,
         }));
       }
@@ -110,6 +122,22 @@ export const useChatStore = create((set, get) => ({
       }));
       get().getConversations();
     });
+    const updateMessage = async (event) => {
+      const updatedMessage = JSON.parse(event.data);
+      const selectedUser = get().selectedUser;
+      if (!selectedUser) return;
+      const belongsToSelection = selectedUser.type === "group"
+        ? updatedMessage.conversationId === selectedUser._id
+        : updatedMessage.senderId === getDirectUserId(selectedUser) ||
+          updatedMessage.conversationId === selectedUser._id;
+      if (!belongsToSelection) return;
+      const [message] = await decryptMessages([updatedMessage]);
+      set((state) => ({
+        messages: state.messages.map((item) => item._id === message._id ? message : item),
+      }));
+    };
+    eventSource.addEventListener("message-updated", updateMessage);
+    eventSource.addEventListener("message-deleted", updateMessage);
     eventSource.onerror = () => {
       if (eventSource.readyState === EventSource.CLOSED) {
         set({ conversationEventSource: null });
@@ -217,7 +245,7 @@ export const useChatStore = create((set, get) => ({
       );
       set((state) => {
         const updateConversation = (conversation) => conversation._id === conversationId
-          ? { ...conversation, members: [...conversation.members, res.data] }
+          ? { ...conversation, members: uniqueMembers([...conversation.members, res.data]) }
           : conversation;
         return {
           conversations: state.conversations.map(updateConversation),
@@ -230,6 +258,37 @@ export const useChatStore = create((set, get) => ({
       return true;
     } catch (error) {
       toast.error(error.response?.data?.message || "Không thể thêm thành viên");
+      return false;
+    }
+  },
+  editMessage: async (messageId, text) => {
+    try {
+      const encryptedText = await encryptMessage(text);
+      const res = await axiosInstance.patch(`/messages/${messageId}`, {
+        text: encryptedText,
+        isEncrypted: true,
+      });
+      const [message] = await decryptMessages([res.data]);
+      set((state) => ({
+        messages: state.messages.map((item) => item._id === messageId ? message : item),
+      }));
+      toast.success("Đã sửa tin nhắn");
+      return true;
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Không thể sửa tin nhắn");
+      return false;
+    }
+  },
+  deleteMessage: async (messageId) => {
+    try {
+      const res = await axiosInstance.delete(`/messages/${messageId}`);
+      set((state) => ({
+        messages: state.messages.map((item) => item._id === messageId ? res.data : item),
+      }));
+      toast.success("Đã thu hồi tin nhắn");
+      return true;
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Không thể thu hồi tin nhắn");
       return false;
     }
   },
