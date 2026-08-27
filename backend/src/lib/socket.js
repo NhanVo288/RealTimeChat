@@ -28,27 +28,33 @@ const io = new Server(server, {
 //apply authentication middleware
 io.use(socketAuthMiddleware)
 
-// kiem tra user on hay off
 export function getReceiverSockerId(userId) {
-    return userSocketMap[userId]
+    const sockets = userSocketMap.get(userId.toString())
+    return sockets ? [...sockets].at(-1) : undefined
 }
-// store online users
-const userSocketMap = {} //{userId : socketId}
+
+// Keep all tabs/devices for a user so one reconnect cannot mark another offline.
+const userSocketMap = new Map()
 
 io.on("connection", (socket) => {
     console.log("A user connected" , socket.user.fullName)
 
     const userId = socket.userId
-    userSocketMap[userId] = socket.id
+    const sockets = userSocketMap.get(userId) || new Set()
+    sockets.add(socket.id)
+    userSocketMap.set(userId, sockets)
 
     // send event to all connected clients
-    io.emit("getOnlineUser", Object.keys(userSocketMap))
+    io.emit("getOnlineUser", [...userSocketMap.keys()])
 
     // socket.on is listening for events from clients
     socket.on("disconnect", () => {
         console.log("Disconnect", socket.user.fullName)
-        delete userSocketMap[userId]
-        io.emit('getOnlineUser', Object.keys(userSocketMap))
+        const sockets = userSocketMap.get(userId)
+        if (!sockets) return
+        sockets.delete(socket.id)
+        if (!sockets.size) userSocketMap.delete(userId)
+        io.emit('getOnlineUser', [...userSocketMap.keys()])
     })
 })
 

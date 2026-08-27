@@ -73,22 +73,34 @@ export const useAuthStore = create((set,get) => ({
   },
 
   connectSocket: () => {
-    const { authUser} = get()
-    if(!authUser || get().socket?.connected) return 
-    const socket = io(BASE_URL, { withCredentials: true, autoConnect: false })
+    const { authUser, socket: currentSocket } = get()
+    if (!authUser || currentSocket?.connected) return
+    currentSocket?.disconnect()
+    const socket = io(BASE_URL, {
+      withCredentials: true,
+      autoConnect: true,
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 10000,
+      timeout: 20000,
+    })
+    set({socket})
+    socket.on("connect", () => {
+      set({ socket, onlineUsers: get().onlineUsers });
+    })
     socket.on("getOnlineUser", (userIds) => {
       set({onlineUsers: userIds})
     })
-    socket.on("connect_error", (error) => {
-      console.error("Socket connection error:", error.message)
+    socket.on("disconnect", () => {
+      set({ onlineUsers: get().onlineUsers.filter((id) => id !== authUser._id) });
     })
-    set({socket})
-    socket.connect()
+    socket.on("connect_error", (error) => {
+      console.error("Socket connection error:", error.message);
+    })
   },
   disconnectSocket: () => {
-   if(get().socket) {
-     get().socket.disconnect()
-     set({ socket: null, onlineUsers: [] })
-   }
+   get().socket?.disconnect()
+   set({ socket: null, onlineUsers: [] })
   }
 }));
