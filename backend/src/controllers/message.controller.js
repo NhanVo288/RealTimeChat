@@ -66,6 +66,7 @@ export const sendMessage = async (req, res) => {
       senderId,
       text,
       image,
+      isEncrypted: Boolean(text),
     });
     await Conversation.findByIdAndUpdate(conversation._id, {
       lastMessage: message._id,

@@ -18,7 +18,7 @@ export default function ChatList() {
       {conversations.map((chat) => {
         const isGroup = chat.type === "group";
         const directMember = chat.members?.find((member) => member._id !== useAuthStore.getState().authUser?._id);
-        const title = isGroup ? chat.name : directMember?.fullName || "Cuộc trò chuyện";
+        const title = isGroup ? `Nhóm: ${chat.name}` : directMember?.fullName || "Cuộc trò chuyện";
         const avatar = isGroup ? chat.avatar : directMember?.profilePic;
         return (
         <div

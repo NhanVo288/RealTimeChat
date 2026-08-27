@@ -1,15 +1,22 @@
 import {Server} from 'socket.io'
+import fs from 'fs'
 import http from 'http'
+import https from 'https'
 import express from 'express'
 import { ENV } from './env.js'
 import { socketAuthMiddleware } from '../middleware/socket.auth.middleware.js'
 
 const app = express()
-const server = http.createServer(app)
+const server = ENV.TLS_KEY_PATH && ENV.TLS_CERT_PATH
+    ? https.createServer({
+        key: fs.readFileSync(ENV.TLS_KEY_PATH),
+        cert: fs.readFileSync(ENV.TLS_CERT_PATH),
+    }, app)
+    : http.createServer(app)
 
 const io = new Server(server, {
     cors: {
-        origin: [ENV.CLIENT_URL],
+        origin: [ENV.CLIENT_URL, 'http://localhost:5173', 'https://localhost:5173'].filter(Boolean),
         credentials: true
     }
 })

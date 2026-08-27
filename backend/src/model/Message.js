@@ -30,7 +30,12 @@ const messageSchema = new mongoose.Schema(
     text: {
       type: String,
       trim: true,
-      maxlength: 2000,
+      maxlength: 10000,
+    },
+
+    isEncrypted: {
+      type: Boolean,
+      default: false,
     },
 
     attachments: [

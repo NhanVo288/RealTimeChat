@@ -13,5 +13,7 @@ export const ENV = {
     CLOUD_API_KEY: process.env.CLOUD_API_KEY,
     CLOUD_API_SECRET: process.env.CLOUD_API_SECRET,
     ARCJET_KEY: process.env.ARCJET_KEY,
-    ARCJET_ENV: process.env.ARCJET_ENV
+    ARCJET_ENV: process.env.ARCJET_ENV,
+    TLS_KEY_PATH: process.env.TLS_KEY_PATH,
+    TLS_CERT_PATH: process.env.TLS_CERT_PATH,
 }

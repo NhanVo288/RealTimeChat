@@ -24,7 +24,7 @@ const ChatHeader = () => {
     (member) => member._id !== useAuthStore.getState().authUser?._id
   );
   const directUser = directMember || selectedUser;
-  const title = isGroup ? selectedUser.name : directUser.fullName;
+  const title = isGroup ? `Nhóm: ${selectedUser.name}` : directUser.fullName;
   const avatar = isGroup ? selectedUser.avatar : directUser.profilePic;
   const isOnline = !isGroup && onlineUsers.includes(directUser._id);
   const isAdmin = isGroup && selectedUser.members?.some(

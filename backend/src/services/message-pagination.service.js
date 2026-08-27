@@ -14,6 +14,7 @@ export const getMessagePage = async (conversationId, query = {}) => {
   if (query.before) filter._id = { $lt: query.before };
 
   const messages = await Message.find(filter)
+    .populate("senderId", "fullName profilePic")
     .sort({ _id: -1 })
     .limit(limit + 1)
     .lean();

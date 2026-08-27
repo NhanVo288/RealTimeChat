@@ -14,10 +14,14 @@ const __dirname = path.resolve();
 const PORT = ENV.PORT;
 const allowedOrigins = [
   "http://localhost:5173",          // frontend dev
+  "https://localhost:5173",         // frontend dev with TLS
   "https://admin-36.up.railway.app",
   "https://shop-36.up.railway.app",
   "http://localhost:3000"
 ];
+if (ENV.CLIENT_URL && !allowedOrigins.includes(ENV.CLIENT_URL)) {
+  allowedOrigins.push(ENV.CLIENT_URL);
+}
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 // app.use(cors({ origin: ENV.CLIENT_URL, credentials: true }));

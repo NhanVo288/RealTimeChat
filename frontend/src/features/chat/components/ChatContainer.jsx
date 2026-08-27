@@ -73,29 +73,48 @@ export default function ChatContainer() {
         )}
         {messages.length > 0 && !isMessagesLoading ? (
           <div className="max-w-3xl mx-auto space-y-6">
-            {messages.map((msg) => {
+            {messages.map((msg, messageIndex) => {
+              const previousMessage = messages[messageIndex - 1];
+              const isOwnMessage = msg.senderId === authUser._id;
+              const showSender = !isOwnMessage &&
+                previousMessage?.senderId !== msg.senderId;
               return (
                 <div
                   key={msg._id}
-                  className={`chat ${
-                    msg.senderId === authUser._id ? "chat-end" : "chat-start"
-                  }`}
+                  className={`flex w-full ${isOwnMessage ? "justify-end" : "justify-start"}`}
                 >
-                  <div
-                    className={`chat-bubble relative ${
-                      msg.senderId === authUser._id
-                        ? "bg-cyan-600 text-white"
-                        : "bg-slate-800 text-slate-200"
-                    }`}
-                  >
+                  {!isOwnMessage && (
+                    <div className="mr-2 flex w-8 shrink-0 items-end">
+                      {showSender && msg.sender && (
+                        <img
+                          src={msg.sender.profilePic || "/avatar.png"}
+                          alt={msg.sender.fullName}
+                          className="h-8 w-8 rounded-full object-cover ring-1 ring-slate-700"
+                        />
+                      )}
+                    </div>
+                  )}
+                  <div className={`flex max-w-[78%] flex-col ${isOwnMessage ? "items-end" : "items-start"}`}>
+                    {showSender && msg.sender && (
+                      <span className="mb-1 ml-1 text-[11px] font-medium text-slate-400">
+                        {msg.sender.fullName}
+                      </span>
+                    )}
+                    <div
+                      className={`relative rounded-2xl px-3.5 py-2 shadow-sm ${
+                        isOwnMessage
+                          ? "rounded-br-md bg-cyan-600 text-white"
+                          : "rounded-bl-md border border-slate-700/70 bg-slate-800/90 text-slate-200"
+                      }`}
+                    >
                     {msg.image && (
                       <img
                         src={msg.image}
-                        className="rounded-lg h-48 object-cover"
+                        className="mb-1 h-48 max-w-full rounded-xl object-cover"
                       />
                     )}
                     {msg.text && <p className="mt-2">{msg.text}</p>}
-                    <p className="text-[10px] opacity-60 mt-1 flex items-center gap-1">
+                    <p className="mt-1 flex items-center gap-1 text-[10px] opacity-60">
                       {new Date(msg.createdAt).toLocaleString("vi-VN", {
                         day: "2-digit",
                         month: "2-digit",
@@ -104,6 +123,7 @@ export default function ChatContainer() {
                         minute: "2-digit",
                       })}
                     </p>
+                    </div>
                   </div>
                 </div>
               );

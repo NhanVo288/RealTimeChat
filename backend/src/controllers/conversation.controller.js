@@ -118,6 +118,7 @@ export const sendConversationMessage = async (req, res) => {
       senderId: req.user._id,
       text,
       image,
+      isEncrypted: Boolean(text),
     });
     await Conversation.findByIdAndUpdate(conversation._id, {
       lastMessage: message._id,
@@ -142,17 +143,7 @@ export const sendConversationMessage = async (req, res) => {
 
 export const deleteGroup = async (req, res) => {
   try {
-    const membership = await ConversationMember.findOne({
-      conversationId: req.params.id,
-      userId: req.user._id,
-    });
-    if (!membership) return res.status(404).json({ message: "Conversation not found" });
-    if (membership.role !== "admin") {
-      return res.status(403).json({ message: "Only group admins can delete the group" });
-    }
-
-    const conversation = await Conversation.findOne({ _id: req.params.id, type: "group" });
-    if (!conversation) return res.status(400).json({ message: "Only groups can be deleted" });
+    const conversation = req.conversation;
     const memberIds = await ConversationMember.find({ conversationId: conversation._id })
       .distinct("userId");
     await Promise.all([
@@ -171,13 +162,11 @@ export const deleteGroup = async (req, res) => {
 export const removeGroupMember = async (req, res) => {
   try {
     const { id: conversationId, memberId } = req.params;
-    const adminMembership = await ConversationMember.findOne({ conversationId, userId: req.user._id, role: "admin" });
-    if (!adminMembership) return res.status(403).json({ message: "Only group admins can remove members" });
-    if (req.user._id.toString() === memberId) {
-      return res.status(400).json({ message: "Admin cannot remove themselves" });
-    }
 
-    const conversation = await Conversation.findOne({ _id: conversationId, type: "group" });
+    const conversation = req.conversation || await Conversation.findOne({
+      _id: conversationId,
+      type: "group",
+    });
     if (!conversation) return res.status(404).json({ message: "Group not found" });
     const member = await ConversationMember.findOne({ conversationId, userId: memberId });
     if (!member) return res.status(404).json({ message: "Member not found" });
@@ -196,11 +185,6 @@ export const removeGroupMember = async (req, res) => {
 export const addGroupMember = async (req, res) => {
   try {
     const { id: conversationId, memberId } = req.params;
-    const adminMembership = await ConversationMember.findOne({ conversationId, userId: req.user._id, role: "admin" });
-    if (!adminMembership) return res.status(403).json({ message: "Only group admins can add members" });
-
-    const conversation = await Conversation.findOne({ _id: conversationId, type: "group" });
-    if (!conversation) return res.status(404).json({ message: "Group not found" });
     const user = await User.findById(memberId).select(publicUserFields);
     if (!user) return res.status(404).json({ message: "User not found" });
     if (await ConversationMember.exists({ conversationId, userId: memberId })) {

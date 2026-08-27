@@ -2,11 +2,13 @@ import { create } from "zustand";
 import { axiosInstance } from "../../../shared/lib/axios";
 import toast from "react-hot-toast";
 import { useAuthStore } from "../../auth/store/useAuthStore";
+import { decryptMessages, encryptMessage } from "../lib/crypto";
 
 const notificationSound = new Audio("/sounds/notification.mp3");
-const eventsUrl = import.meta.env.MODE === "development"
-  ? "http://localhost:3000/api/messages/events"
-  : "/api/messages/events";
+const eventsUrl = import.meta.env.VITE_EVENTS_URL ||
+  (import.meta.env.MODE === "development"
+    ? "http://localhost:3000/api/messages/events"
+    : "/api/messages/events");
 const messagePageSize = 30;
 
 const getDirectUserId = (selection) => {
@@ -257,7 +259,7 @@ export const useChatStore = create((set, get) => ({
         ? { messages: res.data, hasMore: false, nextCursor: null }
         : res.data;
       set({
-        messages: result.messages || [],
+        messages: await decryptMessages(result.messages || []),
         messageCursor: result.nextCursor,
         hasMoreMessages: result.hasMore,
       });
@@ -281,7 +283,10 @@ export const useChatStore = create((set, get) => ({
       const result = Array.isArray(res.data)
         ? { messages: res.data, hasMore: false, nextCursor: null }
         : res.data;
-      const messages = mergeMessages(get().messages, result.messages || []);
+      const messages = mergeMessages(
+        get().messages,
+        await decryptMessages(result.messages || [])
+      );
       set({
         messages,
         messageCursor: result.nextCursor,
@@ -339,13 +344,22 @@ export const useChatStore = create((set, get) => ({
       const endpoint = selectedUser.type === "group"
         ? `/messages/conversations/${selectedUser._id}/send`
         : `/messages/send/${directUserId}`;
+      const encryptedText = payload.text ? await encryptMessage(payload.text) : "";
+      if (body instanceof FormData) {
+        body.set("text", encryptedText);
+        body.append("isEncrypted", "true");
+      } else {
+        body.text = encryptedText;
+        body.isEncrypted = Boolean(encryptedText);
+      }
+
       const res = await axiosInstance.post(
         endpoint,
         body,
         { headers }
       );
 
-      const serverMessage = res.data;
+      const [serverMessage] = await decryptMessages([res.data]);
 
       //  Thay thế optimistic message bằng message server (reconcile)
       set((state) => ({
@@ -371,14 +385,21 @@ export const useChatStore = create((set, get) => ({
 
     const socket = useAuthStore.getState().socket;
 
-    socket.on("newMessage", (newMessage) => {
+    socket.on("newMessage", async (newMessage) => {
+      const isGroupMessage = get().conversations.some(
+        (conversation) =>
+          conversation.type === "group" &&
+          conversation._id === newMessage.conversationId
+      );
       const belongsToSelection = selectedUser.type === "group"
         ? newMessage.conversationId === selectedUser._id
-        : newMessage.senderId === getDirectUserId(selectedUser);
+        : selectedUser.type === "direct"
+          ? newMessage.conversationId === selectedUser._id
+          : !isGroupMessage && newMessage.senderId === getDirectUserId(selectedUser);
       if (!belongsToSelection) return;
       const currentMessage = get().messages;
       const messages = mergeMessages(currentMessage, [newMessage]);
-      set({ messages });
+      set({ messages: await decryptMessages(messages) });
       if (isSoundEnable) {
         notificationSound.currentTime = 0;
         notificationSound.play().catch((e) => console.log("Audio error", e));
