@@ -5,7 +5,6 @@ import Message from "../model/Message.js";
 import User from "../model/User.js";
 import { requireConversationMember } from "../services/conversation.service.js";
 import {
-  addClientStream,
   publishUserEvent,
   publishUsersEvent,
 } from "../services/event.service.js";
@@ -14,15 +13,6 @@ import { getMessagePage } from "../services/message-pagination.service.js";
 
 const publicUserFields = "-password";
 
-export const conversationEvents = (req, res) => {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders();
-  res.write(": connected\n\n");
-  addClientStream(req.user._id, res);
-};
 
 export const createGroup = async (req, res) => {
   try {

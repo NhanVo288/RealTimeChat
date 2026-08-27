@@ -16,7 +16,7 @@ import {
 	removeGroupMember,
 	addGroupMember,
 } from '../controllers/conversation.controller.js'
-import { conversationEvents } from '../controllers/conversation.controller.js'
+import { conversationEvents } from '../services/event.service.js'
 import { protectRoute } from '../middleware/auth.middleware.js'
 import { requireGroupAdmin } from '../middleware/group-admin.middleware.js'
 import { arcjetProtect } from '../middleware/arcjet.middleware.js'

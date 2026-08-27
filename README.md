@@ -1,25 +1,46 @@
 # RealTimeChat
 
-Ứng dụng chat realtime hỗ trợ:
+Ứng dụng chat realtime với React/Vite và Node.js/Express.
 
+## Tính năng
+
+- Đăng ký, đăng nhập bằng JWT HTTP-only cookie.
 - Direct chat và group chat.
-- Admin tạo/xóa group, thêm và kick thành viên.
-- Message realtime qua Socket.IO.
-- Group events realtime qua SSE.
-- Cursor pagination/infinite scroll.
-- Mã hóa text bằng AES-GCM prototype.
+- Group admin: tạo group, xem member, thêm member, kick member, xóa group.
+- Tin nhắn text/hình ảnh qua Cloudinary.
+- Sửa và thu hồi tin nhắn của chính mình.
+- Realtime message qua Socket.IO.
+- Realtime group/message events qua SSE.
+- Cursor pagination và infinite scroll.
+- AES-GCM E2EE prototype cho nội dung text.
 
-## Stack
+## Công nghệ
 
-React, Vite, Zustand, Tailwind CSS, Node.js, Express, MongoDB/Mongoose, Socket.IO, Cloudinary và Resend.
+- Frontend: React 19, Vite, Zustand, Axios, Tailwind CSS, DaisyUI.
+- Backend: Node.js 20+, Express, MongoDB/Mongoose, Socket.IO.
+- Services: Cloudinary, Resend, Arcjet.
 
-## Yêu cầu
+## Cấu trúc
 
-- Node.js `>=20`
-- npm
-- MongoDB local hoặc MongoDB Atlas
+```text
+backend/src/
+├── controllers/       # auth, message, conversation
+├── middleware/        # auth, Arcjet, socket auth, group admin
+├── model/             # User, Message, Conversation, ConversationMember
+├── routes/            # auth.route.js, message.route.js
+├── services/          # conversation, message, pagination, SSE
+└── server.js
+
+frontend/src/
+├── features/auth/     # auth pages/store
+├── features/chat/     # chat UI/store/crypto
+├── shared/            # axios và shared components
+└── App.jsx
+```
 
 ## Cài đặt
+
+Yêu cầu Node.js `>=20`, npm và MongoDB.
 
 ```powershell
 npm install --prefix backend
@@ -70,27 +91,9 @@ npm run dev
 
 Mở `http://localhost:5173`. Backend chạy tại `http://localhost:3000`.
 
-## Cấu trúc
+## API
 
-```text
-backend/src/
-├── controllers/     # auth, message, conversation
-├── middleware/      # auth, group admin, socket auth, Arcjet
-├── model/           # User, Message, Conversation, ConversationMember
-├── routes/          # auth và message routes
-├── services/        # message, conversation, pagination, SSE
-└── server.js
-
-frontend/src/
-├── features/auth/   # đăng nhập, đăng ký, auth store
-├── features/chat/   # chat UI, store, crypto
-├── shared/          # axios và component dùng chung
-└── App.jsx
-```
-
-## API chính
-
-Auth:
+### Auth
 
 ```text
 POST /api/auth/signup
@@ -100,56 +103,80 @@ GET  /api/auth/check
 PUT  /api/auth/update-profile
 ```
 
-Direct chat:
+### Direct message
 
 ```text
-GET  /api/messages/contacts
-GET  /api/messages/chats
-GET  /api/messages/:userId
-POST /api/messages/send/:userId
+GET   /api/messages/contacts
+GET   /api/messages/chats
+GET   /api/messages/:userId
+POST  /api/messages/send/:userId
+PATCH /api/messages/:messageId
+DELETE /api/messages/:messageId
 ```
 
-Group chat:
+### Group/conversation
 
 ```text
 POST   /api/messages/groups
 GET    /api/messages/conversations
 GET    /api/messages/conversations/:id
 POST   /api/messages/conversations/:id/send
-GET    /api/messages/events                 # SSE
-DELETE /api/messages/conversations/:id      # admin
-POST   /api/messages/conversations/:id/members/:memberId # admin
-DELETE /api/messages/conversations/:id/members/:memberId # admin
+GET    /api/messages/events
+DELETE /api/messages/conversations/:id
+POST   /api/messages/conversations/:id/members/:memberId
+DELETE /api/messages/conversations/:id/members/:memberId
 ```
 
-Người tạo group tự động là admin. `group-admin.middleware.js` bảo vệ các API quản trị group.
+Các API xóa group, thêm member và kick member yêu cầu role `admin`. API sửa/thu hồi message chỉ cho phép sender của message thực hiện.
 
-## Realtime và pagination
+## Realtime
 
-- Socket.IO event `newMessage` dùng cho direct/group message.
-- SSE events: `group-created`, `member-added`, `member-removed`, `group-deleted`.
-- Lịch sử tin nhắn dùng cursor:
+Socket.IO dùng event `newMessage` cho tin nhắn direct/group.
+
+SSE endpoint:
+
+```text
+GET /api/messages/events
+```
+
+SSE events:
+
+```text
+group-created
+member-added
+member-removed
+group-deleted
+message-updated
+message-deleted
+```
+
+## Pagination
+
+Lịch sử tin nhắn dùng cursor pagination:
 
 ```text
 GET /api/messages/:userId?limit=30&before=<messageId>
 GET /api/messages/conversations/:id?limit=30&before=<messageId>
 ```
 
-Response:
-
 ```json
-{ "messages": [], "hasMore": true, "nextCursor": "messageId" }
+{
+  "messages": [],
+  "hasMore": true,
+  "nextCursor": "messageId"
+}
 ```
+
+Frontend tự tải tin cũ khi scroll lên và giữ nguyên vị trí scroll.
 
 ## E2EE prototype
 
-Frontend mã hóa text bằng AES-GCM trước khi gửi. Backend chỉ lưu ciphertext; browser giải mã khi nhận history hoặc message realtime.
+Frontend mã hóa text bằng AES-GCM trước khi gửi. Backend chỉ lưu ciphertext trong `Message.text`; browser giải mã khi nhận history hoặc realtime message.
 
- Chưa có per-user key, device key, key exchange, forward secrecy hoặc key rotation.
+Chưa có per-user key, device key, key exchange, forward secrecy hoặc key rotation.
 
 
-
-Environment variables production tối thiểu:
+## Environment production:
 
 ```env
 NODE_ENV=production
@@ -160,7 +187,7 @@ VITE_EVENTS_URL=/api/messages/events
 VITE_E2EE_SECRET=your-secret
 ```
 
-Root script sẽ build `frontend/dist`; backend production phục vụ thư mục này.
+Root build script tạo `frontend/dist`; backend production phục vụ thư mục này.
 
 ## Kiểm tra
 
@@ -174,4 +201,3 @@ npm run build
 cd backend
 Get-ChildItem -Path src -Filter *.js -Recurse | ForEach-Object { node --check $_.FullName }
 ```
-
