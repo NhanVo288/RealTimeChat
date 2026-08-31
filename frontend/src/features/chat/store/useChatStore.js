@@ -208,7 +208,22 @@ export const useChatStore = create((set, get) => ({
           .finally(() => { conversationsRequest = null; });
       }
       const conversations = await conversationsRequest;
-      set({ conversations });
+      set({
+        conversations: conversations.map((conversation) => {
+          const requestedReadId = lastReadRequestByConversation.get(conversation._id);
+          const fetchedReadId = conversation.lastReadMessageId
+            ? String(conversation.lastReadMessageId)
+            : null;
+          if (requestedReadId && (!fetchedReadId || fetchedReadId < requestedReadId)) {
+            return {
+              ...conversation,
+              lastReadMessageId: requestedReadId,
+              unreadCount: 0,
+            };
+          }
+          return conversation;
+        }),
+      });
     } catch (error) {
       toast.error(error.response?.data?.message || "Không thể tải cuộc trò chuyện");
     } finally {
@@ -221,6 +236,17 @@ export const useChatStore = create((set, get) => ({
     const previousRequest = lastReadRequestByConversation.get(conversationId);
     if (previousRequest && previousRequest >= requestedMessageId) return;
     lastReadRequestByConversation.set(conversationId, requestedMessageId);
+    set((state) => ({
+      conversations: state.conversations.map((conversation) =>
+        conversation._id === conversationId
+          ? {
+              ...conversation,
+              lastReadMessageId: requestedMessageId,
+              unreadCount: 0,
+            }
+          : conversation
+      ),
+    }));
     try {
       const { data } = await axiosInstance.post(
         `/messages/conversations/${conversationId}/read`,
@@ -246,6 +272,7 @@ export const useChatStore = create((set, get) => ({
         lastReadRequestByConversation.delete(conversationId);
       }
       console.error("Mark conversation read error:", error);
+      void get().getConversations(true);
     }
   },
   applyConversationMessage: async (message) => {
