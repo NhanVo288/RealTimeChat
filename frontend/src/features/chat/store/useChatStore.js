@@ -12,6 +12,7 @@ const eventsUrl = import.meta.env.VITE_EVENTS_URL ||
 const messagePageSize = 30;
 const reconnectPageSize = 100;
 const lastReadRequestByConversation = new Map();
+let conversationsRequest = null;
 
 const getDirectUserId = (selection) => {
   if (selection?.type !== "group") {
@@ -47,6 +48,10 @@ const uniqueMembers = (members = []) => [
   ...new Map(members.map((member) => [member._id, member])).values(),
 ];
 
+const sortConversationsByLatestMessage = (conversations) => [...conversations].sort(
+  (first, second) => new Date(second.lastMessageAt || 0) - new Date(first.lastMessageAt || 0)
+);
+
 export const useChatStore = create((set, get) => ({
   allContacts: [],
   chats: [],
@@ -62,6 +67,7 @@ export const useChatStore = create((set, get) => ({
   hasMoreMessages: false,
   isLoadingOlderMessages: false,
   isSyncingMissingMessages: false,
+  messageSocketHandler: null,
 
   toggleSound: () => {
     const newState = !get().isSoundEnable;
@@ -75,7 +81,7 @@ export const useChatStore = create((set, get) => ({
     if (get().conversationEventSource) return;
     const eventSource = new EventSource(eventsUrl, { withCredentials: true });
 
-    const refreshConversations = () => get().getConversations();
+    const refreshConversations = () => get().getConversations(true);
     eventSource.addEventListener("group-created", (event) => {
       const conversation = JSON.parse(event.data);
       set((state) => ({
@@ -136,7 +142,7 @@ export const useChatStore = create((set, get) => ({
         selectedUser: state.selectedUser?._id === conversationId ? null : state.selectedUser,
         messages: state.selectedUser?._id === conversationId ? [] : state.messages,
       }));
-      get().getConversations();
+      get().getConversations(true);
     });
     const updateMessage = async (event) => {
       const updatedMessage = JSON.parse(event.data);
@@ -192,18 +198,12 @@ export const useChatStore = create((set, get) => ({
   getConversations: async (silent = false) => {
     if (!silent) set({ isUserLoading: true });
     try {
-      const res = await axiosInstance.get("/messages/conversations");
-      set((state) => {
-        const refreshedSelection = state.selectedUser?.type
-          ? res.data.find((conversation) => conversation._id === state.selectedUser._id)
-          : null;
-        return {
-          conversations: res.data,
-          selectedUser: refreshedSelection
-            ? { ...state.selectedUser, ...refreshedSelection }
-            : state.selectedUser,
-        };
-      });
+      if (!conversationsRequest) {
+        conversationsRequest = axiosInstance.get("/messages/conversations")
+          .finally(() => { conversationsRequest = null; });
+      }
+      const res = await conversationsRequest;
+      set({ conversations: res.data });
     } catch (error) {
       toast.error(error.response?.data?.message || "Không thể tải cuộc trò chuyện");
     } finally {
@@ -234,12 +234,7 @@ export const useChatStore = create((set, get) => ({
             unreadCount: data.unreadCount,
           };
         };
-        return {
-          conversations: state.conversations.map(updateConversation),
-          selectedUser: state.selectedUser?._id === conversationId
-            ? updateConversation(state.selectedUser)
-            : state.selectedUser,
-        };
+        return { conversations: state.conversations.map(updateConversation) };
       });
     } catch (error) {
       if (lastReadRequestByConversation.get(conversationId) === requestedMessageId) {
@@ -247,6 +242,34 @@ export const useChatStore = create((set, get) => ({
       }
       console.error("Mark conversation read error:", error);
     }
+  },
+  applyConversationMessage: (message) => {
+    if (!message?.conversationId || !message?._id) return;
+    const conversationExists = get().conversations.some(
+      (conversation) => conversation._id === message.conversationId
+    );
+    if (!conversationExists) {
+      void get().getConversations(true);
+      return;
+    }
+    const currentUserId = useAuthStore.getState().authUser?._id;
+    set((state) => ({
+      conversations: sortConversationsByLatestMessage(
+        state.conversations.map((conversation) => {
+          if (conversation._id !== message.conversationId) return conversation;
+          const alreadyApplied = conversation.lastMessage?._id === message._id;
+          const isIncoming = message.senderId !== currentUserId;
+          return {
+            ...conversation,
+            lastMessage: message,
+            lastMessageAt: message.createdAt || conversation.lastMessageAt,
+            unreadCount: alreadyApplied || !isIncoming
+              ? Number(conversation.unreadCount || 0)
+              : Number(conversation.unreadCount || 0) + 1,
+          };
+        })
+      ),
+    }));
   },
   createGroup: async (name, memberIds) => {
     try {
@@ -544,7 +567,7 @@ export const useChatStore = create((set, get) => ({
           m._id === tempId ? serverMessage : m
         ),
       }));
-      void get().getConversations(true);
+      get().applyConversationMessage(serverMessage);
     } catch (error) {
       // thất bại thi gỡ optimistic message và báo lỗi
       set((state) => ({
@@ -558,13 +581,15 @@ export const useChatStore = create((set, get) => ({
     }
   },
   subscribeToMessage: () => {
-    const { selectedUser, isSoundEnable } = get();
+    const { selectedUser } = get();
     if (!selectedUser) return;
 
     const socket = useAuthStore.getState().socket;
     if (!socket) return;
 
-    socket.on("newMessage", async (newMessage) => {
+    get().unsubscribeMessage();
+    const handler = async (newMessage) => {
+      if (newMessage.senderId === useAuthStore.getState().authUser?._id) return;
       const isGroupMessage = get().conversations.some(
         (conversation) =>
           conversation.type === "group" &&
@@ -580,14 +605,18 @@ export const useChatStore = create((set, get) => ({
       set((state) => ({
         messages: mergeMessages(state.messages, [decryptedMessage]),
       }));
-      if (isSoundEnable) {
+      if (get().isSoundEnable) {
         notificationSound.currentTime = 0;
         notificationSound.play().catch((e) => console.log("Audio error", e));
       }
-    });
+    };
+    socket.on("newMessage", handler);
+    set({ messageSocketHandler: handler });
   },
   unsubscribeMessage: () => {
     const socket = useAuthStore.getState().socket;
-    socket?.off("newMessage");
+    const handler = get().messageSocketHandler;
+    if (handler) socket?.off("newMessage", handler);
+    set({ messageSocketHandler: null });
   },
 }));

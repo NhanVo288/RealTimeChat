@@ -28,18 +28,21 @@ export default function ChatContainer() {
   const shouldScrollToLatest = useRef(false);
   const previousLatestMessageId = useRef(null);
   const isNearBottom = useRef(true);
+  const selectedConversationId = selectedUser?._id;
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editingText, setEditingText] = useState("");
   useEffect(() => {
-    if (!selectedUser) return;
+    if (!selectedConversationId) return undefined;
+    const currentSelection = useChatStore.getState().selectedUser;
+    if (!currentSelection) return undefined;
 
     shouldScrollToLatest.current = true;
     previousLatestMessageId.current = null;
-    getMessagesBySelection(selectedUser);
+    getMessagesBySelection(currentSelection);
     subscribeToMessage();
 
     return () => unsubscribeMessage();
-  }, [selectedUser, getMessagesBySelection, subscribeToMessage, unsubscribeMessage]);
+  }, [selectedConversationId, getMessagesBySelection, subscribeToMessage, unsubscribeMessage]);
 
   useEffect(() => {
     if (isMessagesLoading || isLoadingOlderMessages || !messagesContainer.current) return;
@@ -59,7 +62,7 @@ export default function ChatContainer() {
   }, [messages, isMessagesLoading, isLoadingOlderMessages]);
 
   useEffect(() => {
-    if (!selectedUser || isMessagesLoading || isLoadingOlderMessages) return undefined;
+    if (!selectedConversationId || isMessagesLoading || isLoadingOlderMessages) return undefined;
     const container = messagesContainer.current;
     if (!container) return undefined;
 
@@ -90,7 +93,7 @@ export default function ChatContainer() {
     };
   }, [
     messages,
-    selectedUser,
+    selectedConversationId,
     isMessagesLoading,
     isLoadingOlderMessages,
     markConversationRead,

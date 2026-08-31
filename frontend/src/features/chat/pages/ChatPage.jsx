@@ -12,7 +12,7 @@ import CreateGroupModal from "../components/CreateGroupModal";
 import { useAuthStore } from "../../auth/store/useAuthStore";
 
 function ChatPage() {
-  const { activeTab, selectedUser, setSelectedUser, subscribeToConversationEvents, unsubscribeFromConversationEvents, syncMissingMessages, getConversations } = useChatStore();
+  const { activeTab, selectedUser, setSelectedUser, subscribeToConversationEvents, unsubscribeFromConversationEvents, syncMissingMessages, applyConversationMessage } = useChatStore();
   const { authUser, socket, socketConnectionVersion } = useAuthStore();
   const [isGroupModalOpen, setIsGroupModalOpen] = useState(false);
 
@@ -29,17 +29,12 @@ function ChatPage() {
 
   useEffect(() => {
     if (!socket) return undefined;
-    let refreshTimer = null;
-    const refreshConversationList = () => {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => { void getConversations(true); }, 100);
-    };
-    socket.on("newMessage", refreshConversationList);
+    const updateConversationList = (message) => applyConversationMessage(message);
+    socket.on("newMessage", updateConversationList);
     return () => {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      socket.off("newMessage", refreshConversationList);
+      socket.off("newMessage", updateConversationList);
     };
-  }, [socket, getConversations]);
+  }, [socket, applyConversationMessage]);
 
   return (
     <div className="relative w-full max-w-6xl h-screen md:h-[800px]">
