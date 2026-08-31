@@ -7,12 +7,12 @@
 - Đăng ký, đăng nhập bằng JWT HTTP-only cookie.
 - Direct chat và group chat.
 - Group admin: tạo group, xem member, thêm member, kick member, xóa group.
-- Tin nhắn text/hình ảnh qua Cloudinary.
+- Tin nhắn text/hình ảnh được mã hóa đầu-cuối trước khi rời trình duyệt.
 - Sửa và thu hồi tin nhắn của chính mình.
 - Realtime message qua Socket.IO.
 - Realtime group/message events qua SSE.
 - Cursor pagination và infinite scroll.
-- AES-GCM E2EE prototype cho nội dung text.
+- E2EE đa thiết bị với identity key, signed prekey, one-time prekey và key rotation.
 
 ## Công nghệ
 
@@ -70,7 +70,6 @@ Tạo `frontend/.env`:
 VITE_API_URL=http://localhost:3000/api
 VITE_BACKEND_URL=http://localhost:3000
 VITE_EVENTS_URL=http://localhost:3000/api/messages/events
-VITE_E2EE_SECRET=your-development-e2ee-secret
 ```
 
 Không commit `.env` hoặc secret thật.
@@ -101,6 +100,10 @@ POST /api/auth/login
 POST /api/auth/logout
 GET  /api/auth/check
 PUT  /api/auth/update-profile
+GET  /api/auth/devices
+PUT  /api/auth/devices/:deviceId
+DELETE /api/auth/devices/:deviceId
+POST /api/auth/keys/claim
 ```
 
 ### Direct message
@@ -169,11 +172,16 @@ GET /api/messages/conversations/:id?limit=30&before=<messageId>
 
 Frontend tự tải tin cũ khi scroll lên và giữ nguyên vị trí scroll.
 
-## E2EE prototype
+## E2EE
 
-Frontend mã hóa text bằng AES-GCM trước khi gửi. Backend chỉ lưu ciphertext trong `Message.text`; browser giải mã khi nhận history hoặc realtime message.
+- Mỗi tài khoản quản lý một tập thiết bị; mỗi browser profile có identity signing key riêng. Private key không được gửi lên backend và được lưu bằng IndexedDB dưới dạng `CryptoKey` không export được.
+- Mỗi thiết bị công bố signed prekey và một kho one-time prekey có chữ ký. Người gửi xác minh chữ ký trước khi thực hiện ECDH P-256 và HKDF-SHA-256.
+- Mỗi tin nhắn có khóa AES-256-GCM ngẫu nhiên. Khóa tin nhắn được bọc riêng cho từng thiết bị của tất cả thành viên, kể cả các thiết bị của người gửi.
+- One-time prekey bị lấy khỏi server khi được claim và bị xóa khỏi client sau khi giải mã. Cơ chế này cung cấp forward secrecy đối với việc identity/signed-prekey bị lộ về sau; message key đã mở được cache cục bộ để đọc lại lịch sử trên đúng thiết bị.
+- Signed prekey tự xoay sau 7 ngày; one-time prekey tự bổ sung. Tin nhắn được ký ECDSA và identity key của thiết bị gửi được pin theo TOFU để phát hiện thay đổi khóa.
+- Nội dung text và data URL của ảnh cùng nằm trong ciphertext. Backend chỉ thấy metadata cần để định tuyến như user/device, conversation, thời gian và kích thước ciphertext.
 
-Chưa có per-user key, device key, key exchange, forward secrecy hoặc key rotation.
+Thiết bị mới chỉ đọc được các tin gửi sau khi thiết bị đó đăng ký. Xóa IndexedDB sẽ làm mất private key và khả năng giải mã lịch sử trên thiết bị đó. Production bắt buộc dùng HTTPS; localhost được Web Crypto xem là secure context.
 
 
 ## Environment production:
@@ -184,7 +192,6 @@ CLIENT_URL=https://your-app.onrender.com
 VITE_API_URL=/api
 VITE_BACKEND_URL=/
 VITE_EVENTS_URL=/api/messages/events
-VITE_E2EE_SECRET=your-secret
 ```
 
 Root build script tạo `frontend/dist`; backend production phục vụ thư mục này.

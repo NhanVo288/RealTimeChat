@@ -38,6 +38,11 @@ const messageSchema = new mongoose.Schema(
       default: false,
     },
 
+    encryptedPayload: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+
     attachments: [
       {
         url: String,

@@ -1,4 +1,4 @@
-import { getReceiverSockerId, io } from "../lib/socket.js";
+import { emitToUser } from "../lib/socket.js";
 import Conversation from "../model/Conversation.js";
 import ConversationMember from "../model/ConversationMember.js";
 import Message from "../model/Message.js";
@@ -8,7 +8,7 @@ import {
   publishUserEvent,
   publishUsersEvent,
 } from "../services/event.service.js";
-import { createMessage, toClientMessage } from "../services/message.service.js";
+import { createMessage, toClientMessage, validateEncryptedPayload } from "../services/message.service.js";
 import { getMessagePage } from "../services/message-pagination.service.js";
 
 const publicUserFields = "-password";
@@ -96,19 +96,19 @@ export const getConversationMessages = async (req, res) => {
 
 export const sendConversationMessage = async (req, res) => {
   try {
-    const { text = "", image = null } = req.body;
+    const { encryptedPayload } = req.body;
     const conversation = await requireConversationMember(req.params.id, req.user._id);
     if (!conversation) return res.status(404).json({ message: "Conversation not found" });
-    if (!text.trim() && !image) {
-      return res.status(400).json({ message: "Message cannot be empty" });
+    if (!(await validateEncryptedPayload(encryptedPayload, req.user._id, conversation._id))) {
+      return res.status(400).json({ message: "A valid E2EE payload is required" });
     }
 
     const message = await createMessage({
       conversationId: conversation._id,
       senderId: req.user._id,
-      text,
-      image,
-      isEncrypted: Boolean(text),
+      text: "",
+      image: null,
+      encryptedPayload,
     });
     await Conversation.findByIdAndUpdate(conversation._id, {
       lastMessage: message._id,
@@ -120,10 +120,7 @@ export const sendConversationMessage = async (req, res) => {
       conversationId: conversation._id,
       userId: { $ne: req.user._id },
     }).distinct("userId");
-    members.forEach((memberId) => {
-      const socketId = getReceiverSockerId(memberId.toString());
-      if (socketId) io.to(socketId).emit("newMessage", clientMessage);
-    });
+    members.forEach((memberId) => emitToUser(memberId, "newMessage", clientMessage));
     return res.status(201).json(clientMessage);
   } catch (error) {
     console.error("Send conversation message error:", error);

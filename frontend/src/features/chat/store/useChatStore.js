@@ -20,6 +20,19 @@ const getDirectUserId = (selection) => {
   return selection._id;
 };
 
+const getRecipientUserIds = (selection) => selection?.type === "group"
+  ? selection.members.map((member) => member._id)
+  : [getDirectUserId(selection)];
+
+const getEncryptionContext = (selection) => {
+  if (selection?.type === "group") return `conversation:${selection._id}`;
+  const userIds = [
+    useAuthStore.getState().authUser?._id,
+    getDirectUserId(selection),
+  ].filter(Boolean).sort();
+  return `direct:${userIds.join(":")}`;
+};
+
 const mergeMessages = (currentMessages, incomingMessages) => {
   const messagesById = new Map(currentMessages.map((message) => [message._id, message]));
   incomingMessages.forEach((message) => messagesById.set(message._id, message));
@@ -263,10 +276,14 @@ export const useChatStore = create((set, get) => ({
   },
   editMessage: async (messageId, text) => {
     try {
-      const encryptedText = await encryptMessage(text);
+      const existingMessage = get().messages.find((message) => message._id === messageId);
+      const encryptedPayload = await encryptMessage(
+        { text, image: existingMessage?.image || null },
+        getRecipientUserIds(get().selectedUser),
+        getEncryptionContext(get().selectedUser)
+      );
       const res = await axiosInstance.patch(`/messages/${messageId}`, {
-        text: encryptedText,
-        isEncrypted: true,
+        encryptedPayload,
       });
       const [message] = await decryptMessages([res.data]);
       set((state) => ({
@@ -275,7 +292,7 @@ export const useChatStore = create((set, get) => ({
       toast.success("Đã sửa tin nhắn");
       return true;
     } catch (error) {
-      toast.error(error.response?.data?.message || "Không thể sửa tin nhắn");
+      toast.error(error.response?.data?.message || error.message || "Không thể sửa tin nhắn");
       return false;
     }
   },
@@ -295,7 +312,8 @@ export const useChatStore = create((set, get) => ({
   getMessageByUser: async (userId) => {
     try {
       const res = await axiosInstance.get(`/messages/${userId}`);
-      set({ messages: res.data });
+      const result = Array.isArray(res.data) ? res.data : res.data.messages || [];
+      set({ messages: await decryptMessages(result) });
     } catch (error) {
       toast.error(error?.response.data.message);
     } finally {
@@ -403,14 +421,12 @@ export const useChatStore = create((set, get) => ({
       const endpoint = selectedUser.type === "group"
         ? `/messages/conversations/${selectedUser._id}/send`
         : `/messages/send/${directUserId}`;
-      const encryptedText = payload.text ? await encryptMessage(payload.text) : "";
-      if (body instanceof FormData) {
-        body.set("text", encryptedText);
-        body.append("isEncrypted", "true");
-      } else {
-        body.text = encryptedText;
-        body.isEncrypted = Boolean(encryptedText);
-      }
+      const encryptedPayload = await encryptMessage(
+        { text: payload.text || "", image: payload.image || null },
+        getRecipientUserIds(selectedUser),
+        getEncryptionContext(selectedUser)
+      );
+      body = { encryptedPayload };
 
       const res = await axiosInstance.post(
         endpoint,
@@ -433,7 +449,7 @@ export const useChatStore = create((set, get) => ({
       }));
 
       toast.error(
-        error.response?.data?.message ||
+        error.response?.data?.message || error.message ||
           "Gửi tin nhắn thất bại. Vui lòng thử lại."
       );
     }

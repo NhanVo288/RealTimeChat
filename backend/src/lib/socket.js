@@ -33,6 +33,11 @@ export function getReceiverSockerId(userId) {
     return sockets ? [...sockets].at(-1) : undefined
 }
 
+export function emitToUser(userId, event, payload) {
+    const sockets = userSocketMap.get(userId.toString())
+    if (sockets?.size) io.to([...sockets]).emit(event, payload)
+}
+
 // Keep all tabs/devices for a user so one reconnect cannot mark another offline.
 const userSocketMap = new Map()
 

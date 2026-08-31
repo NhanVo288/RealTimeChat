@@ -1,4 +1,4 @@
-import { getReceiverSockerId, io } from "../lib/socket.js";
+import { emitToUser } from "../lib/socket.js";
 import Conversation from "../model/Conversation.js";
 import ConversationMember from "../model/ConversationMember.js";
 import Message from "../model/Message.js";
@@ -7,7 +7,7 @@ import {
   getDirectConversation,
   getOrCreateDirectConversation,
 } from "../services/conversation.service.js";
-import { createMessage, toClientMessage } from "../services/message.service.js";
+import { createMessage, toClientMessage, validateEncryptedPayload } from "../services/message.service.js";
 import { getMessagePage } from "../services/message-pagination.service.js";
 import { publishUsersEvent } from "../services/event.service.js";
 
@@ -48,7 +48,7 @@ export const getChatByUserId = async (req, res) => {
 export const sendMessage = async (req, res) => {
   try {
     const { id: receiverId } = req.params;
-    const { text = "", image = null } = req.body;
+    const { encryptedPayload } = req.body;
     const senderId = req.user._id;
 
     if (senderId.toString() === receiverId) {
@@ -57,17 +57,16 @@ export const sendMessage = async (req, res) => {
     if (!(await User.exists({ _id: receiverId }))) {
       return res.status(404).json({ message: "Recipient not found" });
     }
-    if (!text.trim() && !image) {
-      return res.status(400).json({ message: "Message cannot be empty" });
-    }
-
     const conversation = await getOrCreateDirectConversation(senderId, receiverId);
+    if (!(await validateEncryptedPayload(encryptedPayload, senderId, conversation._id))) {
+      return res.status(400).json({ message: "A valid E2EE payload is required" });
+    }
     const message = await createMessage({
       conversationId: conversation._id,
       senderId,
-      text,
-      image,
-      isEncrypted: Boolean(text),
+      text: "",
+      image: null,
+      encryptedPayload,
     });
     await Conversation.findByIdAndUpdate(conversation._id, {
       lastMessage: message._id,
@@ -75,8 +74,7 @@ export const sendMessage = async (req, res) => {
     });
 
     const clientMessage = toClientMessage(message);
-    const receiverSocketId = getReceiverSockerId(receiverId);
-    if (receiverSocketId) io.to(receiverSocketId).emit("newMessage", clientMessage);
+    emitToUser(receiverId, "newMessage", clientMessage);
     return res.status(201).json(clientMessage);
   } catch (error) {
     console.error("Send message error:", error);
@@ -104,8 +102,7 @@ export const getChats = async (req, res) => {
 
 export const editMessage = async (req, res) => {
   try {
-    const { text = "", isEncrypted = false } = req.body;
-    if (!text.trim()) return res.status(400).json({ message: "Message cannot be empty" });
+    const { encryptedPayload } = req.body;
 
     const existingMessage = await Message.findOne({
       _id: req.params.id,
@@ -118,10 +115,15 @@ export const editMessage = async (req, res) => {
       userId: req.user._id,
     });
     if (!isMember) return res.status(403).json({ message: "Not a conversation member" });
+    if (!(await validateEncryptedPayload(
+      encryptedPayload,
+      req.user._id,
+      existingMessage.conversationId
+    ))) return res.status(400).json({ message: "A valid E2EE payload is required" });
 
     const message = await Message.findOneAndUpdate(
       { _id: req.params.id, senderId: req.user._id, deletedAt: null },
-      { text: text.trim(), isEncrypted: Boolean(isEncrypted), editedAt: new Date() },
+      { text: "", isEncrypted: true, encryptedPayload, editedAt: new Date() },
       { new: true }
     ).populate("senderId", "fullName profilePic");
     if (!message) return res.status(404).json({ message: "Message not found" });
@@ -154,7 +156,7 @@ export const deleteMessage = async (req, res) => {
 
     const message = await Message.findOneAndUpdate(
       { _id: req.params.id, senderId: req.user._id, deletedAt: null },
-      { text: "", isEncrypted: false, deletedAt: new Date(), editedAt: null },
+      { text: "", isEncrypted: false, encryptedPayload: null, deletedAt: new Date(), editedAt: null },
       { new: true }
     ).populate("senderId", "fullName profilePic");
     if (!message) return res.status(404).json({ message: "Message not found" });

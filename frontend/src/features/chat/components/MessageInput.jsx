@@ -2,12 +2,14 @@ import React, { useRef, useState } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { ImageIcon, SendIcon, XIcon } from "lucide-react";
 import toast from "react-hot-toast";
+import { useAuthStore } from "../../auth/store/useAuthStore";
 
 function MessageInput() {
   const [text, setText] = useState("");
   const [imagePreview, setImagePreview] = useState(null);
   const fileInput = useRef(null);
   const { sendMessage } = useChatStore();
+  const { isE2EEReady, e2eeError } = useAuthStore();
 
   const handleSendMessage = (e) => {
     e.preventDefault();
@@ -24,8 +26,14 @@ function MessageInput() {
 
   const handleImage = (e) => {
     const file = e.target.files[0];
+    if (!file) return;
     if (!file.type.startsWith("image/")) {
       toast.error("Vui long chon hinh anh");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Ảnh tối đa 5 MB");
+      e.target.value = "";
       return;
     }
     const reader = new FileReader();
@@ -38,6 +46,11 @@ function MessageInput() {
   };
   return (
     <div className="p-4 border-t border-slate-700/50">
+      {!isE2EEReady && (
+        <p className="mb-2 text-center text-xs text-red-300">
+          E2EE chưa sẵn sàng: {e2eeError || "đang khởi tạo khóa thiết bị"}
+        </p>
+      )}
       {imagePreview && (
         <div className="max-w-3xl mx-auto mb-4 flex items-center justify-start px-2">
           <div className="relative group">
@@ -91,7 +104,7 @@ function MessageInput() {
         {/* Send Button */}
         <button
           type="submit"
-          disabled={!text.trim() && !imagePreview}
+          disabled={!isE2EEReady || (!text.trim() && !imagePreview)}
           className="bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-700 disabled:text-slate-500
       text-white px-4 py-2 rounded-lg transition font-medium shadow"
         >

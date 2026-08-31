@@ -2,10 +2,21 @@ import { create } from "zustand";
 import { axiosInstance } from "../../../shared/lib/axios";
 import toast from "react-hot-toast";
 import { io } from 'socket.io-client'
+import { initializeE2EE, resetE2EESession } from "../../../shared/lib/crypto";
 
 
 const BASE_URL = import.meta.env.VITE_BACKEND_URL ||
   (import.meta.env.MODE === "development" ? "http://localhost:3000" : "/");
+const activateE2EE = async (userId, set) => {
+  try {
+    await initializeE2EE(userId);
+    set({ isE2EEReady: true, e2eeError: null });
+  } catch (error) {
+    console.error("E2EE initialization error:", error);
+    set({ isE2EEReady: false, e2eeError: error.message });
+  }
+};
+
 export const useAuthStore = create((set,get) => ({
   authUser: null,
   isCheckingAuth: true,
@@ -13,13 +24,16 @@ export const useAuthStore = create((set,get) => ({
   isLogingIn: false,
   socket: null,
   onlineUsers: [],
+  isE2EEReady: false,
+  e2eeError: null,
   checkAuth: async () => {
     try {
       const res = await axiosInstance.get("/auth/check");
       set({ authUser: res.data });
+      await activateE2EE(res.data._id, set);
     } catch (error) {
       console.log(error);
-      set({ authUser: null });
+      set({ authUser: null, isE2EEReady: false, e2eeError: null });
     } finally {
       set({ isCheckingAuth: false });
     }
@@ -29,10 +43,11 @@ export const useAuthStore = create((set,get) => ({
     try {
       const res = await axiosInstance.post("/auth/signup", data);
       set({ authUser: res.data });
+      await activateE2EE(res.data._id, set);
       toast.success("Tao tai khoan thanh cong");
       get().connectSocket()
     } catch (error) {
-      toast.error(error.response.data.message);
+      toast.error(error.response?.data?.message || error.message);
     } finally {
       set({ isSigingUp: false });
     }
@@ -42,11 +57,12 @@ export const useAuthStore = create((set,get) => ({
     try {
       const res = await axiosInstance.post("/auth/login", data);
       set({ authUser: res.data });
+      await activateE2EE(res.data._id, set);
       toast.success("Dang nhap thanh cong");
 
       get().connectSocket()
     } catch (error) {
-      toast.error(error.response.data.message);
+      toast.error(error.response?.data?.message || error.message);
     } finally {
       set({ isLogingIn: false });
     }
@@ -54,7 +70,8 @@ export const useAuthStore = create((set,get) => ({
   logOut: async () => {
     try {
       await axiosInstance.post("/auth/logout");
-      set({authUser: null})
+      set({authUser: null, isE2EEReady: false, e2eeError: null})
+      resetE2EESession();
       toast.success("Đăng xuất thành công")
       get().disconnectSocket()
     } catch (error) {
