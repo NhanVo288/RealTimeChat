@@ -9,6 +9,12 @@ const signedPreKeyLifetime = 7 * 24 * 60 * 60 * 1000;
 const preKeyTarget = 30;
 let currentUserId = null;
 let devicePromise = null;
+let databasePromise = null;
+let maintenanceTimer = null;
+let maintenancePromise = null;
+let pendingMaintenanceDevice = null;
+let maintenanceRequested = false;
+let emergencyMaintenanceRequested = false;
 
 const bytesToBase64 = (bytes) => {
   let value = "";
@@ -32,21 +38,38 @@ const canonicalize = (value) => {
   return JSON.stringify(value);
 };
 
-const openDatabase = () => new Promise((resolve, reject) => {
-  const request = indexedDB.open(dbName, 1);
-  request.onupgradeneeded = () => request.result.createObjectStore(storeName);
-  request.onsuccess = () => resolve(request.result);
-  request.onerror = () => reject(request.error);
-});
+const openDatabase = () => {
+  if (!databasePromise) {
+    databasePromise = new Promise((resolve, reject) => {
+      const request = indexedDB.open(dbName, 1);
+      request.onupgradeneeded = () => request.result.createObjectStore(storeName);
+      request.onsuccess = () => {
+        const database = request.result;
+        database.onversionchange = () => {
+          database.close();
+          databasePromise = null;
+        };
+        resolve(database);
+      };
+      request.onerror = () => {
+        databasePromise = null;
+        reject(request.error);
+      };
+    });
+  }
+  return databasePromise;
+};
 
 const databaseOperation = async (mode, operation) => {
   const database = await openDatabase();
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(storeName, mode);
     const request = operation(transaction.objectStore(storeName));
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-    transaction.oncomplete = () => database.close();
+    let result;
+    request.onsuccess = () => { result = request.result; };
+    transaction.oncomplete = () => resolve(result);
+    transaction.onerror = () => reject(transaction.error || request.error);
+    transaction.onabort = () => reject(transaction.error || request.error);
   });
 };
 
@@ -92,11 +115,13 @@ const publicPreKey = ({ keyId, publicKey, signature, createdAt }) => ({
 
 const createDevice = async (userId) => {
   const identity = await generateKeyPair("ECDSA", ["sign", "verify"]);
-  const signedPreKey = await createPreKey(identity.privateKey);
-  const oneTimePreKeys = [];
-  for (let index = 0; index < preKeyTarget; index += 1) {
-    oneTimePreKeys.push(await createPreKey(identity.privateKey));
-  }
+  const [signedPreKey, oneTimePreKeys] = await Promise.all([
+    createPreKey(identity.privateKey),
+    Promise.all(Array.from(
+      { length: preKeyTarget },
+      () => createPreKey(identity.privateKey)
+    )),
+  ]);
   return {
     userId,
     deviceId: crypto.randomUUID(),
@@ -122,29 +147,61 @@ const registerDevice = async (device) => {
 };
 
 const maintainPreKeys = async (device, force = false) => {
-  let changed = false;
   const currentSigned = device.signedPreKeys.at(-1);
-  if (Date.now() - new Date(currentSigned.createdAt).getTime() > signedPreKeyLifetime) {
-    device.signedPreKeys.push(await createPreKey(device.identity.privateKey));
+  const shouldRotate = Date.now() - new Date(currentSigned.createdAt).getTime() > signedPreKeyLifetime;
+  const refillCount = device.oneTimePreKeys.length < 10
+    ? preKeyTarget - device.oneTimePreKeys.length
+    : 0;
+  const [rotatedPreKey, freshPreKeys] = await Promise.all([
+    shouldRotate ? createPreKey(device.identity.privateKey) : null,
+    Promise.all(Array.from(
+      { length: refillCount },
+      () => createPreKey(device.identity.privateKey)
+    )),
+  ]);
+  if (rotatedPreKey) {
+    device.signedPreKeys.push(rotatedPreKey);
     device.signedPreKeys = device.signedPreKeys.slice(-4);
-    changed = true;
   }
-  if (device.oneTimePreKeys.length < 10) {
-    while (device.oneTimePreKeys.length < preKeyTarget) {
-      device.oneTimePreKeys.push(await createPreKey(device.identity.privateKey));
-    }
-    changed = true;
-  }
-  return changed || force ? registerDevice(device) : device;
+  device.oneTimePreKeys.push(...freshPreKeys);
+  return rotatedPreKey || freshPreKeys.length || force ? registerDevice(device) : device;
 };
 
 const emergencyPreKeyRefill = async (device) => {
   if (Date.now() - (device.lastEmergencyRefill || 0) < 60 * 60 * 1000) return;
-  for (let index = 0; index < 20; index += 1) {
-    device.oneTimePreKeys.push(await createPreKey(device.identity.privateKey));
-  }
+  const freshPreKeys = await Promise.all(Array.from(
+    { length: 20 },
+    () => createPreKey(device.identity.privateKey)
+  ));
+  device.oneTimePreKeys.push(...freshPreKeys);
   device.lastEmergencyRefill = Date.now();
   await registerDevice(device);
+};
+
+const scheduleKeyMaintenance = (device, emergency = false) => {
+  pendingMaintenanceDevice = device;
+  maintenanceRequested = true;
+  emergencyMaintenanceRequested ||= emergency;
+  if (maintenanceTimer || maintenancePromise) return;
+
+  maintenanceTimer = setTimeout(() => {
+    maintenanceTimer = null;
+    const targetDevice = pendingMaintenanceDevice;
+    const runEmergencyRefill = emergencyMaintenanceRequested;
+    maintenanceRequested = false;
+    emergencyMaintenanceRequested = false;
+    maintenancePromise = (async () => {
+      if (runEmergencyRefill) await emergencyPreKeyRefill(targetDevice);
+      await maintainPreKeys(targetDevice);
+    })()
+      .catch((error) => console.error("E2EE background key maintenance error:", error))
+      .finally(() => {
+        maintenancePromise = null;
+        if (maintenanceRequested) {
+          scheduleKeyMaintenance(pendingMaintenanceDevice, emergencyMaintenanceRequested);
+        }
+      });
+  }, 0);
 };
 
 export const initializeE2EE = async (userId) => {
@@ -207,7 +264,8 @@ const unsignedPayload = (payload) => ({
 
 export const encryptMessage = async (content, recipientUserIds, context) => {
   if (typeof context !== "string" || !context) throw new Error("Missing E2EE conversation context");
-  const device = await maintainPreKeys(await initializeE2EE(currentUserId));
+  const device = await initializeE2EE(currentUserId);
+  scheduleKeyMaintenance(device);
   const userIds = [...new Set([...recipientUserIds.map(String), String(currentUserId)])];
   const { data } = await axiosInstance.post("/auth/keys/claim", { userIds });
   const coveredUsers = new Set(data.bundles.map((bundle) => bundle.userId));
@@ -216,15 +274,14 @@ export const encryptMessage = async (content, recipientUserIds, context) => {
   }
   if (data.bundles.some((bundle) =>
     bundle.deviceId === device.deviceId && bundle.preKey.type === "signed")) {
-    await emergencyPreKeyRefill(device);
+    scheduleKeyMaintenance(device, true);
   }
 
   const messageKey = await crypto.subtle.generateKey(
     { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]
   );
   const rawMessageKey = await crypto.subtle.exportKey("raw", messageKey);
-  const envelopes = [];
-  for (const bundle of data.bundles) {
+  const envelopes = await Promise.all(data.bundles.map(async (bundle) => {
     if (!(await verifyPreKey(bundle))) throw new Error("Invalid recipient pre-key signature");
     const ephemeral = await generateKeyPair("ECDH", ["deriveBits"]);
     const wrappingKey = await deriveWrappingKey(
@@ -232,7 +289,7 @@ export const encryptMessage = async (content, recipientUserIds, context) => {
     );
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const wrapped = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, wrappingKey, rawMessageKey);
-    envelopes.push({
+    return {
       userId: bundle.userId,
       deviceId: bundle.deviceId,
       keyId: bundle.preKey.keyId,
@@ -240,8 +297,8 @@ export const encryptMessage = async (content, recipientUserIds, context) => {
       ephemeralPublicKey: ephemeral.publicKey,
       iv: bytesToBase64(iv),
       ciphertext: bytesToBase64(wrapped),
-    });
-  }
+    };
+  }));
 
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt(
@@ -301,9 +358,9 @@ const unwrapMessageKey = async (message, payload, device) => {
   if (envelope.keyType === "one-time") {
     device.oneTimePreKeys = device.oneTimePreKeys.filter((item) => item.keyId !== envelope.keyId);
     await writeKey(`device:${device.userId}`, device);
-    await maintainPreKeys(device);
+    scheduleKeyMaintenance(device);
   } else {
-    await emergencyPreKeyRefill(device);
+    scheduleKeyMaintenance(device, true);
   }
   return crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, ["decrypt"]);
 };
@@ -341,4 +398,9 @@ export const decryptMessages = async (messages) => Promise.all(messages.map(asyn
 export const resetE2EESession = () => {
   currentUserId = null;
   devicePromise = null;
+  pendingMaintenanceDevice = null;
+  maintenanceRequested = false;
+  emergencyMaintenanceRequested = false;
+  if (maintenanceTimer) clearTimeout(maintenanceTimer);
+  maintenanceTimer = null;
 };

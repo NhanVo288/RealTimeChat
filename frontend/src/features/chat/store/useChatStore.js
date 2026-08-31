@@ -472,9 +472,10 @@ export const useChatStore = create((set, get) => ({
           ? newMessage.conversationId === selectedUser._id
           : !isGroupMessage && newMessage.senderId === getDirectUserId(selectedUser);
       if (!belongsToSelection) return;
-      const currentMessage = get().messages;
-      const messages = mergeMessages(currentMessage, [newMessage]);
-      set({ messages: await decryptMessages(messages) });
+      const [decryptedMessage] = await decryptMessages([newMessage]);
+      set((state) => ({
+        messages: mergeMessages(state.messages, [decryptedMessage]),
+      }));
       if (isSoundEnable) {
         notificationSound.currentTime = 0;
         notificationSound.play().catch((e) => console.log("Audio error", e));
