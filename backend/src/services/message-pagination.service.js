@@ -11,19 +11,24 @@ export const getMessagePage = async (conversationId, query = {}) => {
     : defaultPageSize;
 
   const filter = { conversationId };
-  if (query.before) filter._id = { $lt: query.before };
+  const isForwardSync = Boolean(query.after);
+  if (isForwardSync) filter._id = { $gt: query.after };
+  else if (query.before) filter._id = { $lt: query.before };
 
   const messages = await Message.find(filter)
     .populate("senderId", "fullName profilePic")
-    .sort({ _id: -1 })
+    .sort({ _id: isForwardSync ? 1 : -1 })
     .limit(limit + 1)
     .lean();
   const hasMore = messages.length > limit;
-  const page = messages.slice(0, limit).reverse();
+  const limitedMessages = messages.slice(0, limit);
+  const page = isForwardSync ? limitedMessages : limitedMessages.reverse();
 
   return {
     messages: page.map(toClientMessage),
     hasMore,
-    nextCursor: hasMore ? page[0]._id.toString() : null,
+    nextCursor: hasMore
+      ? (isForwardSync ? page.at(-1) : page[0])._id.toString()
+      : null,
   };
 };

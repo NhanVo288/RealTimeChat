@@ -10,6 +10,8 @@ const eventsUrl = import.meta.env.VITE_EVENTS_URL ||
     ? "http://localhost:3000/api/messages/events"
     : "/api/messages/events");
 const messagePageSize = 30;
+const reconnectPageSize = 100;
+const lastReadRequestByConversation = new Map();
 
 const getDirectUserId = (selection) => {
   if (selection?.type !== "group") {
@@ -59,6 +61,7 @@ export const useChatStore = create((set, get) => ({
   messageCursor: null,
   hasMoreMessages: false,
   isLoadingOlderMessages: false,
+  isSyncingMissingMessages: false,
 
   toggleSound: () => {
     const newState = !get().isSoundEnable;
@@ -186,15 +189,63 @@ export const useChatStore = create((set, get) => ({
       set({ isUserLoading: false });
     }
   },
-  getConversations: async () => {
-    set({ isUserLoading: true });
+  getConversations: async (silent = false) => {
+    if (!silent) set({ isUserLoading: true });
     try {
       const res = await axiosInstance.get("/messages/conversations");
-      set({ conversations: res.data });
+      set((state) => {
+        const refreshedSelection = state.selectedUser?.type
+          ? res.data.find((conversation) => conversation._id === state.selectedUser._id)
+          : null;
+        return {
+          conversations: res.data,
+          selectedUser: refreshedSelection
+            ? { ...state.selectedUser, ...refreshedSelection }
+            : state.selectedUser,
+        };
+      });
     } catch (error) {
       toast.error(error.response?.data?.message || "Không thể tải cuộc trò chuyện");
     } finally {
-      set({ isUserLoading: false });
+      if (!silent) set({ isUserLoading: false });
+    }
+  },
+  markConversationRead: async (conversationId, messageId) => {
+    if (!conversationId || !messageId || String(messageId).startsWith("temp-")) return;
+    const requestedMessageId = String(messageId);
+    const previousRequest = lastReadRequestByConversation.get(conversationId);
+    if (previousRequest && previousRequest >= requestedMessageId) return;
+    lastReadRequestByConversation.set(conversationId, requestedMessageId);
+    try {
+      const { data } = await axiosInstance.post(
+        `/messages/conversations/${conversationId}/read`,
+        { messageId: requestedMessageId }
+      );
+      set((state) => {
+        const updateConversation = (conversation) => {
+          if (conversation._id !== conversationId) return conversation;
+          if (conversation.lastReadMessageId &&
+            String(conversation.lastReadMessageId) > String(data.lastReadMessageId)) {
+            return conversation;
+          }
+          return {
+            ...conversation,
+            lastReadMessageId: data.lastReadMessageId,
+            unreadCount: data.unreadCount,
+          };
+        };
+        return {
+          conversations: state.conversations.map(updateConversation),
+          selectedUser: state.selectedUser?._id === conversationId
+            ? updateConversation(state.selectedUser)
+            : state.selectedUser,
+        };
+      });
+    } catch (error) {
+      if (lastReadRequestByConversation.get(conversationId) === requestedMessageId) {
+        lastReadRequestByConversation.delete(conversationId);
+      }
+      console.error("Mark conversation read error:", error);
     }
   },
   createGroup: async (name, memberIds) => {
@@ -375,6 +426,57 @@ export const useChatStore = create((set, get) => ({
       set({ isLoadingOlderMessages: false });
     }
   },
+  syncMissingMessages: async () => {
+    const { selectedUser, messages, isSyncingMissingMessages } = get();
+    if (isSyncingMissingMessages) return;
+    if (!selectedUser) {
+      await get().getConversations(true);
+      return;
+    }
+
+    const selectionId = selectedUser._id;
+    const latestMessage = [...messages].reverse().find(
+      (message) => message._id && !message.isOptimistic &&
+        !String(message._id).startsWith("temp-")
+    );
+    if (!latestMessage) {
+      await get().getMessagesBySelection(selectedUser);
+      await get().getConversations(true);
+      return;
+    }
+
+    const url = selectedUser.type === "group"
+      ? `/messages/conversations/${selectedUser._id}`
+      : `/messages/${getDirectUserId(selectedUser)}`;
+    set({ isSyncingMissingMessages: true });
+    try {
+      let after = latestMessage._id;
+      let hasMore = true;
+      while (hasMore) {
+        const res = await axiosInstance.get(url, {
+          params: { limit: reconnectPageSize, after },
+        });
+        const result = Array.isArray(res.data)
+          ? { messages: res.data, hasMore: false, nextCursor: null }
+          : res.data;
+        const decryptedMessages = await decryptMessages(result.messages || []);
+        if (get().selectedUser?._id !== selectionId) {
+          return;
+        }
+        set((state) => ({
+          messages: mergeMessages(state.messages, decryptedMessages),
+        }));
+        hasMore = Boolean(result.hasMore && result.nextCursor && result.nextCursor !== after);
+        after = result.nextCursor;
+      }
+    } catch (error) {
+      console.error("Missing message sync error:", error);
+      toast.error(error.response?.data?.message || "Không thể đồng bộ tin nhắn bị lỡ");
+    } finally {
+      set({ isSyncingMissingMessages: false });
+      await get().getConversations(true);
+    }
+  },
   sendMessage: async (payload) => {
     // payload = { text: '...', image: File | dataURL | null }
     const { selectedUser } = get();
@@ -442,6 +544,7 @@ export const useChatStore = create((set, get) => ({
           m._id === tempId ? serverMessage : m
         ),
       }));
+      void get().getConversations(true);
     } catch (error) {
       // thất bại thi gỡ optimistic message và báo lỗi
       set((state) => ({
@@ -459,6 +562,7 @@ export const useChatStore = create((set, get) => ({
     if (!selectedUser) return;
 
     const socket = useAuthStore.getState().socket;
+    if (!socket) return;
 
     socket.on("newMessage", async (newMessage) => {
       const isGroupMessage = get().conversations.some(
@@ -484,6 +588,6 @@ export const useChatStore = create((set, get) => ({
   },
   unsubscribeMessage: () => {
     const socket = useAuthStore.getState().socket;
-    socket.off("newMessage");
+    socket?.off("newMessage");
   },
 }));

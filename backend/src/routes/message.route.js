@@ -15,6 +15,7 @@ import {
 	deleteGroup,
 	removeGroupMember,
 	addGroupMember,
+	markConversationRead,
 } from '../controllers/conversation.controller.js'
 import { conversationEvents } from '../services/event.service.js'
 import { protectRoute } from '../middleware/auth.middleware.js'
@@ -29,6 +30,7 @@ router.get("/events", conversationEvents)
 router.get("/conversations", getConversations)
 router.get("/conversations/:id", getConversationMessages)
 router.post("/conversations/:id/send", sendConversationMessage)
+router.post("/conversations/:id/read", markConversationRead)
 router.delete("/conversations/:id", requireGroupAdmin, deleteGroup)
 router.delete("/conversations/:id/members/:memberId", requireGroupAdmin, removeGroupMember)
 router.post("/conversations/:id/members/:memberId", requireGroupAdmin, addGroupMember)

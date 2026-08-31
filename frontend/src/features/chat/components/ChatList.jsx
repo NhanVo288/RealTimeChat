@@ -20,6 +20,7 @@ export default function ChatList() {
         const directMember = chat.members?.find((member) => member._id !== useAuthStore.getState().authUser?._id);
         const title = isGroup ? `Nhóm: ${chat.name}` : directMember?.fullName || "Cuộc trò chuyện";
         const avatar = isGroup ? chat.avatar : directMember?.profilePic;
+        const unreadCount = Number(chat.unreadCount || 0);
         return (
         <div
           key={chat._id}
@@ -35,9 +36,30 @@ export default function ChatList() {
                 />
               </div>
             </div>
-            <div className="min-w-0">
-              <h4 className="text-slate-200 font-medium truncate">{title}</h4>
-              {isGroup && <p className="text-xs text-slate-500">{chat.members?.length || 0} thành viên</p>}
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="text-slate-200 font-medium truncate">{title}</h4>
+                {chat.lastMessageAt && (
+                  <span className="shrink-0 text-[10px] text-slate-500">
+                    {new Date(chat.lastMessageAt).toLocaleTimeString("vi-VN", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </span>
+                )}
+              </div>
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <p className="truncate text-xs text-slate-500">
+                  {unreadCount > 0
+                    ? `${unreadCount} tin nhắn chưa đọc`
+                    : isGroup ? `${chat.members?.length || 0} thành viên` : "Đã đọc"}
+                </p>
+                {unreadCount > 0 && (
+                  <span className="min-w-5 rounded-full bg-cyan-500 px-1.5 py-0.5 text-center text-[10px] font-bold text-slate-950">
+                    {unreadCount > 99 ? "99+" : unreadCount}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </div>

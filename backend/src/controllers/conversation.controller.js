@@ -10,6 +10,7 @@ import {
 } from "../services/event.service.js";
 import { createMessage, toClientMessage, validateEncryptedPayload } from "../services/message.service.js";
 import { getMessagePage } from "../services/message-pagination.service.js";
+import mongoose from "mongoose";
 
 const publicUserFields = "-password";
 
@@ -66,18 +67,76 @@ export const getConversations = async (req, res) => {
     const memberships = await ConversationMember.find({ userId: req.user._id })
       .populate({ path: "conversationId", populate: { path: "lastMessage" } })
       .sort({ updatedAt: -1 });
-    const conversations = await Promise.all(memberships.map(async ({ conversationId }) => {
+    const conversations = await Promise.all(memberships.map(async (membership) => {
+      const { conversationId } = membership;
+      if (!conversationId) return null;
       const members = await ConversationMember.find({ conversationId: conversationId._id })
         .populate("userId", publicUserFields)
         .select("userId role");
+      const unreadFilter = {
+        conversationId: conversationId._id,
+        senderId: { $ne: req.user._id },
+        deletedAt: null,
+      };
+      if (membership.lastReadMessageId) {
+        unreadFilter._id = { $gt: membership.lastReadMessageId };
+      }
+      const unreadCount = await Message.countDocuments(unreadFilter);
       return {
         ...conversationId.toObject(),
         members: members.map((member) => ({ ...member.userId.toObject(), role: member.role })),
+        lastReadMessageId: membership.lastReadMessageId,
+        unreadCount,
       };
     }));
-    return res.status(200).json(conversations);
+    return res.status(200).json(conversations.filter(Boolean).sort((first, second) =>
+      new Date(second.lastMessageAt || second.updatedAt) -
+      new Date(first.lastMessageAt || first.updatedAt)
+    ));
   } catch (error) {
     console.error("Get conversations error:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+export const markConversationRead = async (req, res) => {
+  try {
+    const { messageId } = req.body;
+    if (!mongoose.isValidObjectId(messageId)) {
+      return res.status(400).json({ message: "A valid messageId is required" });
+    }
+    const membership = await ConversationMember.findOne({
+      conversationId: req.params.id,
+      userId: req.user._id,
+    });
+    if (!membership) return res.status(404).json({ message: "Conversation not found" });
+
+    const message = await Message.findOne({
+      _id: messageId,
+      conversationId: req.params.id,
+    }).select("_id");
+    if (!message) return res.status(404).json({ message: "Message not found in conversation" });
+
+    const currentReadId = membership.lastReadMessageId?.toString();
+    if (!currentReadId || currentReadId < message._id.toString()) {
+      membership.lastReadMessageId = message._id;
+    }
+    const effectiveReadId = membership.lastReadMessageId;
+    const unreadCount = await Message.countDocuments({
+      conversationId: req.params.id,
+      senderId: { $ne: req.user._id },
+      deletedAt: null,
+      ...(effectiveReadId ? { _id: { $gt: effectiveReadId } } : {}),
+    });
+    membership.unreadCount = unreadCount;
+    await membership.save();
+    return res.status(200).json({
+      conversationId: req.params.id,
+      lastReadMessageId: effectiveReadId,
+      unreadCount,
+    });
+  } catch (error) {
+    console.error("Mark conversation read error:", error);
     return res.status(500).json({ message: "Server error" });
   }
 };
@@ -178,7 +237,12 @@ export const addGroupMember = async (req, res) => {
       return res.status(409).json({ message: "User is already a group member" });
     }
 
-    await ConversationMember.create({ conversationId, userId: memberId, role: "member" });
+    await ConversationMember.create({
+      conversationId,
+      userId: memberId,
+      role: "member",
+      lastReadMessageId: req.conversation?.lastMessage || null,
+    });
     const currentMemberIds = await ConversationMember.find({ conversationId }).distinct("userId");
     publishUsersEvent(currentMemberIds, "member-added", {
       conversationId,

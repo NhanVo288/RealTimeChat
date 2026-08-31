@@ -24,6 +24,7 @@ export const useAuthStore = create((set,get) => ({
   isLogingIn: false,
   socket: null,
   onlineUsers: [],
+  socketConnectionVersion: 0,
   isE2EEReady: false,
   e2eeError: null,
   checkAuth: async () => {
@@ -104,7 +105,11 @@ export const useAuthStore = create((set,get) => ({
     })
     set({socket})
     socket.on("connect", () => {
-      set({ socket, onlineUsers: get().onlineUsers });
+      set((state) => ({
+        socket,
+        onlineUsers: state.onlineUsers,
+        socketConnectionVersion: state.socketConnectionVersion + 1,
+      }));
     })
     socket.on("getOnlineUser", (userIds) => {
       set({onlineUsers: userIds})
@@ -118,6 +123,6 @@ export const useAuthStore = create((set,get) => ({
   },
   disconnectSocket: () => {
    get().socket?.disconnect()
-   set({ socket: null, onlineUsers: [] })
+   set({ socket: null, onlineUsers: [], socketConnectionVersion: 0 })
   }
 }));

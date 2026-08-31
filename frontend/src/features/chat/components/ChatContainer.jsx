@@ -21,11 +21,13 @@ export default function ChatContainer() {
     unsubscribeMessage,
     editMessage,
     deleteMessage,
+    markConversationRead,
   } = useChatStore();
   const { authUser } = useAuthStore();
   const messagesContainer = useRef(null);
   const shouldScrollToLatest = useRef(false);
   const previousLatestMessageId = useRef(null);
+  const isNearBottom = useRef(true);
   const [editingMessageId, setEditingMessageId] = useState(null);
   const [editingText, setEditingText] = useState("");
   useEffect(() => {
@@ -44,10 +46,11 @@ export default function ChatContainer() {
 
     const latestMessageId = messages.at(-1)?._id || null;
     const latestMessageChanged = latestMessageId !== previousLatestMessageId.current;
-    if (shouldScrollToLatest.current || latestMessageChanged) {
+    if (shouldScrollToLatest.current || (latestMessageChanged && isNearBottom.current)) {
       requestAnimationFrame(() => {
         if (messagesContainer.current) {
           messagesContainer.current.scrollTop = messagesContainer.current.scrollHeight;
+          isNearBottom.current = true;
         }
       });
       shouldScrollToLatest.current = false;
@@ -55,8 +58,50 @@ export default function ChatContainer() {
     previousLatestMessageId.current = latestMessageId;
   }, [messages, isMessagesLoading, isLoadingOlderMessages]);
 
+  useEffect(() => {
+    if (!selectedUser || isMessagesLoading || isLoadingOlderMessages) return undefined;
+    const container = messagesContainer.current;
+    if (!container) return undefined;
+
+    const markLatestVisibleMessage = () => {
+      if (document.visibilityState !== "visible" || !document.hasFocus()) return;
+      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      if (distanceFromBottom > 80) return;
+      const latestMessage = [...messages].reverse().find(
+        (message) => message._id && !message.isOptimistic &&
+          !String(message._id).startsWith("temp-")
+      );
+      if (!latestMessage?.conversationId) return;
+      void markConversationRead(latestMessage.conversationId, latestMessage._id);
+    };
+
+    const frame = requestAnimationFrame(markLatestVisibleMessage);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") markLatestVisibleMessage();
+    };
+    container.addEventListener("scroll", markLatestVisibleMessage, { passive: true });
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", markLatestVisibleMessage);
+    return () => {
+      cancelAnimationFrame(frame);
+      container.removeEventListener("scroll", markLatestVisibleMessage);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", markLatestVisibleMessage);
+    };
+  }, [
+    messages,
+    selectedUser,
+    isMessagesLoading,
+    isLoadingOlderMessages,
+    markConversationRead,
+  ]);
+
   const handleMessagesScroll = async () => {
     const container = messagesContainer.current;
+    if (container) {
+      isNearBottom.current =
+        container.scrollHeight - container.scrollTop - container.clientHeight <= 80;
+    }
     if (!container || container.scrollTop > 80 || !hasMoreMessages || isLoadingOlderMessages) return;
 
     const previousHeight = container.scrollHeight;

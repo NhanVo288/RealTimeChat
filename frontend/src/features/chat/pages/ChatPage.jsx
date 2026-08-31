@@ -12,8 +12,8 @@ import CreateGroupModal from "../components/CreateGroupModal";
 import { useAuthStore } from "../../auth/store/useAuthStore";
 
 function ChatPage() {
-  const { activeTab, selectedUser, setSelectedUser, subscribeToConversationEvents, unsubscribeFromConversationEvents } = useChatStore();
-  const { authUser } = useAuthStore();
+  const { activeTab, selectedUser, setSelectedUser, subscribeToConversationEvents, unsubscribeFromConversationEvents, syncMissingMessages, getConversations } = useChatStore();
+  const { authUser, socket, socketConnectionVersion } = useAuthStore();
   const [isGroupModalOpen, setIsGroupModalOpen] = useState(false);
 
   useEffect(() => {
@@ -21,6 +21,25 @@ function ChatPage() {
     subscribeToConversationEvents();
     return unsubscribeFromConversationEvents;
   }, [authUser, subscribeToConversationEvents, unsubscribeFromConversationEvents]);
+
+  useEffect(() => {
+    if (!authUser || socketConnectionVersion === 0) return;
+    void syncMissingMessages();
+  }, [authUser, socketConnectionVersion, syncMissingMessages]);
+
+  useEffect(() => {
+    if (!socket) return undefined;
+    let refreshTimer = null;
+    const refreshConversationList = () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => { void getConversations(true); }, 100);
+    };
+    socket.on("newMessage", refreshConversationList);
+    return () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      socket.off("newMessage", refreshConversationList);
+    };
+  }, [socket, getConversations]);
 
   return (
     <div className="relative w-full max-w-6xl h-screen md:h-[800px]">
