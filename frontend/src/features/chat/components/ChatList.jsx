@@ -21,6 +21,17 @@ export default function ChatList() {
         const title = isGroup ? `Nhóm: ${chat.name}` : directMember?.fullName || "Cuộc trò chuyện";
         const avatar = isGroup ? chat.avatar : directMember?.profilePic;
         const unreadCount = Number(chat.unreadCount || 0);
+        const lastMessage = chat.lastMessage;
+        const isOwnLastMessage = lastMessage?.senderId === useAuthStore.getState().authUser?._id;
+        const senderName = isOwnLastMessage
+          ? "Bạn"
+          : isGroup ? lastMessage?.sender?.fullName : directMember?.fullName;
+        const messagePreview = lastMessage?.deletedAt
+          ? "Tin nhắn đã được thu hồi"
+          : lastMessage?.text?.trim() || (lastMessage?.image ? "Đã gửi một hình ảnh" : "");
+        const preview = messagePreview
+          ? `${senderName ? `${senderName}: ` : ""}${messagePreview}`
+          : isGroup ? `${chat.members?.length || 0} thành viên` : "Chưa có tin nhắn";
         return (
         <div
           key={chat._id}
@@ -50,9 +61,7 @@ export default function ChatList() {
               </div>
               <div className="mt-1 flex items-center justify-between gap-2">
                 <p className="truncate text-xs text-slate-500">
-                  {unreadCount > 0
-                    ? `${unreadCount} tin nhắn chưa đọc`
-                    : isGroup ? `${chat.members?.length || 0} thành viên` : "Đã đọc"}
+                  {preview}
                 </p>
                 {unreadCount > 0 && (
                   <span className="min-w-5 rounded-full bg-cyan-500 px-1.5 py-0.5 text-center text-[10px] font-bold text-slate-950">

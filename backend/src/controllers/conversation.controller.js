@@ -65,7 +65,13 @@ export const createGroup = async (req, res) => {
 export const getConversations = async (req, res) => {
   try {
     const memberships = await ConversationMember.find({ userId: req.user._id })
-      .populate({ path: "conversationId", populate: { path: "lastMessage" } })
+      .populate({
+        path: "conversationId",
+        populate: {
+          path: "lastMessage",
+          populate: { path: "senderId", select: "fullName profilePic" },
+        },
+      })
       .sort({ updatedAt: -1 });
     const conversations = await Promise.all(memberships.map(async (membership) => {
       const { conversationId } = membership;
@@ -82,8 +88,12 @@ export const getConversations = async (req, res) => {
         unreadFilter._id = { $gt: membership.lastReadMessageId };
       }
       const unreadCount = await Message.countDocuments(unreadFilter);
+      const conversationData = conversationId.toObject();
       return {
-        ...conversationId.toObject(),
+        ...conversationData,
+        lastMessage: conversationData.lastMessage
+          ? toClientMessage(conversationData.lastMessage)
+          : null,
         members: members.map((member) => ({ ...member.userId.toObject(), role: member.role })),
         lastReadMessageId: membership.lastReadMessageId,
         unreadCount,

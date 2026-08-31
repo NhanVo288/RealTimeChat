@@ -29,7 +29,7 @@ function ChatPage() {
 
   useEffect(() => {
     if (!socket) return undefined;
-    const updateConversationList = (message) => applyConversationMessage(message);
+    const updateConversationList = (message) => { void applyConversationMessage(message); };
     socket.on("newMessage", updateConversationList);
     return () => {
       socket.off("newMessage", updateConversationList);

@@ -200,10 +200,15 @@ export const useChatStore = create((set, get) => ({
     try {
       if (!conversationsRequest) {
         conversationsRequest = axiosInstance.get("/messages/conversations")
+          .then(({ data }) => Promise.all(data.map(async (conversation) => {
+            if (!conversation.lastMessage) return conversation;
+            const [lastMessage] = await decryptMessages([conversation.lastMessage]);
+            return { ...conversation, lastMessage };
+          })))
           .finally(() => { conversationsRequest = null; });
       }
-      const res = await conversationsRequest;
-      set({ conversations: res.data });
+      const conversations = await conversationsRequest;
+      set({ conversations });
     } catch (error) {
       toast.error(error.response?.data?.message || "Không thể tải cuộc trò chuyện");
     } finally {
@@ -243,7 +248,7 @@ export const useChatStore = create((set, get) => ({
       console.error("Mark conversation read error:", error);
     }
   },
-  applyConversationMessage: (message) => {
+  applyConversationMessage: async (message) => {
     if (!message?.conversationId || !message?._id) return;
     const conversationExists = get().conversations.some(
       (conversation) => conversation._id === message.conversationId
@@ -268,6 +273,16 @@ export const useChatStore = create((set, get) => ({
               : Number(conversation.unreadCount || 0) + 1,
           };
         })
+      ),
+    }));
+
+    const [decryptedMessage] = await decryptMessages([message]);
+    set((state) => ({
+      conversations: state.conversations.map((conversation) =>
+        conversation._id === message.conversationId &&
+        conversation.lastMessage?._id === message._id
+          ? { ...conversation, lastMessage: decryptedMessage }
+          : conversation
       ),
     }));
   },
