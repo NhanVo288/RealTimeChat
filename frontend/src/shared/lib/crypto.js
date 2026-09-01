@@ -2,11 +2,14 @@ import { axiosInstance } from "./axios";
 import {
   E2EE_ALGORITHM,
   E2EE_VERSION,
+  KEY_BACKUP_ITERATIONS,
+  KEY_BACKUP_VERSION,
   authenticatedMessageMetadata,
   canonicalize,
   deviceEncryptionKeyData,
   isCurrentMessageKeyCache,
   messageKeyCacheKey,
+  mergeHistoricalKeyEntries,
   peerIdentityPinKey,
   unsignedPayload,
 } from "./crypto-core";
@@ -20,6 +23,8 @@ let devicePromise = null;
 let databasePromise = null;
 let sessionVersion = 0;
 let sessionController = null;
+let backupSyncPromise = null;
+const historicalPrivateKeys = new Map();
 
 const bytesToBase64 = (bytes) => {
   let value = "";
@@ -79,7 +84,7 @@ const assertActiveSession = (device, version) => {
   }
 };
 
-const generateKeyPair = async (name, usages) => {
+const generateKeyPair = async (name, usages, includePrivateKeyMaterial = false) => {
   const generated = await crypto.subtle.generateKey({ name, namedCurve: "P-256" }, true, usages);
   const [publicKey, privatePkcs8] = await Promise.all([
     crypto.subtle.exportKey("jwk", generated.publicKey),
@@ -89,7 +94,13 @@ const generateKeyPair = async (name, usages) => {
     "pkcs8", privatePkcs8, { name, namedCurve: "P-256" }, false,
     name === "ECDSA" ? ["sign"] : ["deriveBits"]
   );
-  return { publicKey, privateKey };
+  return {
+    publicKey,
+    privateKey,
+    ...(includePrivateKeyMaterial
+      ? { privateKeyPkcs8: bytesToBase64(privatePkcs8) }
+      : {}),
+  };
 };
 
 const signDeviceEncryptionKey = async (deviceId, publicKey, identityPrivateKey) =>
@@ -102,7 +113,7 @@ const signDeviceEncryptionKey = async (deviceId, publicKey, identityPrivateKey) 
 const createDevice = async (userId) => {
   const [identity, encryption] = await Promise.all([
     generateKeyPair("ECDSA", ["sign", "verify"]),
-    generateKeyPair("ECDH", ["deriveBits"]),
+    generateKeyPair("ECDH", ["deriveBits"], true),
   ]);
   const deviceId = crypto.randomUUID();
   encryption.signature = await signDeviceEncryptionKey(
@@ -113,9 +124,26 @@ const createDevice = async (userId) => {
   return { userId, deviceId, identity, encryption };
 };
 
-const migrateDevice = async (device) => {
+const migrateDevice = async (device, allowKeyRotation) => {
   if (!device.encryption?.privateKey || !device.encryption?.publicKey) {
-    device.encryption = await generateKeyPair("ECDH", ["deriveBits"]);
+    device.encryption = await generateKeyPair("ECDH", ["deriveBits"], true);
+  } else if (!device.encryption.privateKeyPkcs8 && allowKeyRotation) {
+    const replacement = await createDevice(device.userId);
+    replacement.historicalEncryptionKeys = device.historicalEncryptionKeys || [];
+    replacement.localLegacyDevices = [
+      ...(device.localLegacyDevices || []),
+      {
+        deviceId: device.deviceId,
+        encryptionPrivateKey: device.encryption.privateKey,
+        oneTimePreKeys: device.oneTimePreKeys || [],
+        signedPreKeys: device.signedPreKeys || [],
+      },
+    ];
+    replacement.obsoleteDeviceIds = [
+      ...(device.obsoleteDeviceIds || []),
+      device.deviceId,
+    ];
+    return replacement;
   }
   if (!device.encryption.signature) {
     device.encryption.signature = await signDeviceEncryptionKey(
@@ -124,6 +152,7 @@ const migrateDevice = async (device) => {
       device.identity.privateKey
     );
   }
+  return device;
 };
 
 const registerDevice = async (device, version) => {
@@ -135,34 +164,186 @@ const registerDevice = async (device, version) => {
     encryptionKeySignature: device.encryption.signature,
   }, { signal: sessionController?.signal });
   assertActiveSession(device, version);
+  for (const obsoleteDeviceId of [...new Set(device.obsoleteDeviceIds || [])]) {
+    try {
+      await axiosInstance.delete(`/auth/devices/${obsoleteDeviceId}`, {
+        signal: sessionController?.signal,
+      });
+    } catch (error) {
+      if (error.response?.status !== 404) throw error;
+    }
+  }
+  device.obsoleteDeviceIds = [];
   await writeKey(`device:${device.userId}`, device);
   return device;
 };
 
-export const initializeE2EE = async (userId) => {
+const keyBackupAdditionalData = (userId) =>
+  encoder.encode(`realtime-chat:key-backup:v${KEY_BACKUP_VERSION}:${userId}`);
+
+const deriveKeyBackupKey = async (password, salt) => {
+  const material = await crypto.subtle.importKey(
+    "raw", encoder.encode(password), "PBKDF2", false, ["deriveKey"]
+  );
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt,
+      iterations: KEY_BACKUP_ITERATIONS,
+    },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+};
+
+const encryptKeyBackup = async (userId, password, keys) => {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKeyBackupKey(password, salt);
+  const ciphertext = await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv,
+      additionalData: keyBackupAdditionalData(userId),
+    },
+    key,
+    encoder.encode(JSON.stringify({ version: KEY_BACKUP_VERSION, keys }))
+  );
+  return {
+    version: KEY_BACKUP_VERSION,
+    kdf: "PBKDF2-SHA256",
+    iterations: KEY_BACKUP_ITERATIONS,
+    salt: bytesToBase64(salt),
+    iv: bytesToBase64(iv),
+    ciphertext: bytesToBase64(ciphertext),
+  };
+};
+
+const decryptKeyBackup = async (userId, password, backup) => {
+  if (backup.version !== KEY_BACKUP_VERSION || backup.kdf !== "PBKDF2-SHA256" ||
+    backup.iterations !== KEY_BACKUP_ITERATIONS) {
+    throw new Error("Unsupported device-key backup format");
+  }
+  try {
+    const salt = base64ToBytes(backup.salt);
+    const key = await deriveKeyBackupKey(password, salt);
+    const plaintext = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: base64ToBytes(backup.iv),
+        additionalData: keyBackupAdditionalData(userId),
+      },
+      key,
+      base64ToBytes(backup.ciphertext)
+    );
+    const parsed = JSON.parse(decoder.decode(plaintext));
+    if (parsed.version !== KEY_BACKUP_VERSION || !Array.isArray(parsed.keys)) {
+      throw new Error("Invalid device-key backup payload");
+    }
+    return mergeHistoricalKeyEntries(parsed.keys);
+  } catch (error) {
+    if (error.message === "Invalid device-key backup payload" ||
+      error.message === "Conflicting historical device key") throw error;
+    throw new Error("Không thể mở bản sao khóa E2EE bằng mật khẩu hiện tại");
+  }
+};
+
+const importHistoricalPrivateKey = (entry) => {
+  if (!historicalPrivateKeys.has(entry.deviceId)) {
+    historicalPrivateKeys.set(entry.deviceId, crypto.subtle.importKey(
+      "pkcs8",
+      base64ToBytes(entry.privateKeyPkcs8),
+      { name: "ECDH", namedCurve: "P-256" },
+      false,
+      ["deriveBits"]
+    ));
+  }
+  return historicalPrivateKeys.get(entry.deviceId);
+};
+
+const sameHistoricalKeys = (first, second) =>
+  first.length === second.length && first.every((entry, index) =>
+    entry.deviceId === second[index].deviceId &&
+    entry.privateKeyPkcs8 === second[index].privateKeyPkcs8
+  );
+
+const syncDeviceKeyBackup = async (device, password, version) => {
+  if (typeof password !== "string" || !password) return device;
+  const ownKey = device.encryption.privateKeyPkcs8
+    ? [{ deviceId: device.deviceId, privateKeyPkcs8: device.encryption.privateKeyPkcs8 }]
+    : [];
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    assertActiveSession(device, version);
+    const { data } = await axiosInstance.get("/auth/keys/backup", {
+      signal: sessionController?.signal,
+    });
+    const remoteKeys = data.backup
+      ? await decryptKeyBackup(device.userId, password, data.backup)
+      : [];
+    const localKeys = mergeHistoricalKeyEntries(device.historicalEncryptionKeys || []);
+    const mergedKeys = mergeHistoricalKeyEntries(remoteKeys, localKeys, ownKey);
+    if (mergedKeys.length > 500) throw new Error("Device-key backup is too large");
+    await Promise.all(mergedKeys.map(importHistoricalPrivateKey));
+    assertActiveSession(device, version);
+    device.historicalEncryptionKeys = mergedKeys;
+    await writeKey(`device:${device.userId}`, device);
+
+    if (sameHistoricalKeys(remoteKeys, mergedKeys)) return device;
+    const backup = await encryptKeyBackup(device.userId, password, mergedKeys);
+    try {
+      await axiosInstance.put("/auth/keys/backup", {
+        backup,
+        expectedRevision: data.revision,
+      }, { signal: sessionController?.signal });
+      assertActiveSession(device, version);
+      return device;
+    } catch (error) {
+      if (error.response?.status !== 409 || attempt === 2) throw error;
+    }
+  }
+  return device;
+};
+
+export const initializeE2EE = async (userId, { backupPassword } = {}) => {
   if (!window.isSecureContext || !crypto?.subtle || typeof indexedDB === "undefined") {
     throw new Error("E2EE requires HTTPS (or localhost) and Web Crypto support");
   }
   const normalizedUserId = String(userId);
-  if (currentUserId === normalizedUserId && devicePromise) return devicePromise;
+  if (currentUserId !== normalizedUserId || !devicePromise) {
+    sessionController?.abort();
+    sessionVersion += 1;
+    const version = sessionVersion;
+    sessionController = new AbortController();
+    currentUserId = normalizedUserId;
+    backupSyncPromise = null;
+    historicalPrivateKeys.clear();
+    devicePromise = (async () => {
+      let device = await readKey(`device:${normalizedUserId}`);
+      if (!device) device = await createDevice(normalizedUserId);
+      else device = await migrateDevice(device, Boolean(backupPassword));
+      assertActiveSession(device, version);
+      await writeKey(`device:${normalizedUserId}`, device);
+      return registerDevice(device, version);
+    })().catch((error) => {
+      if (version === sessionVersion) devicePromise = null;
+      throw error;
+    });
+  }
 
-  sessionController?.abort();
-  sessionVersion += 1;
-  const version = sessionVersion;
-  sessionController = new AbortController();
-  currentUserId = normalizedUserId;
-  devicePromise = (async () => {
-    let device = await readKey(`device:${normalizedUserId}`);
-    if (!device) device = await createDevice(normalizedUserId);
-    else await migrateDevice(device);
-    assertActiveSession(device, version);
-    await writeKey(`device:${normalizedUserId}`, device);
-    return registerDevice(device, version);
-  })().catch((error) => {
-    if (version === sessionVersion) devicePromise = null;
-    throw error;
-  });
-  return devicePromise;
+  const device = await devicePromise;
+  if (backupPassword && !backupSyncPromise) {
+    const version = sessionVersion;
+    backupSyncPromise = syncDeviceKeyBackup(device, backupPassword, version).catch((error) => {
+      if (version === sessionVersion) backupSyncPromise = null;
+      throw error;
+    });
+  }
+  if (backupSyncPromise) await backupSyncPromise;
+  return device;
 };
 
 const deriveEcdhWrappingKey = async (privateKey, publicJwk, salt, info) => {
@@ -348,24 +529,53 @@ const unwrapMessageKey = async (message, payload, device) => {
   }
   if (cached) await deleteKey(cacheKey);
 
-  const envelope = payload.envelopes.find((item) =>
+  let envelope = payload.envelopes.find((item) =>
     item.deviceId === device.deviceId && String(item.userId) === String(currentUserId)
   );
-  if (!envelope) throw new Error("Message was not encrypted for this device");
+  let decryptionPrivateKey = device.encryption?.privateKey;
+  let legacyDevice = null;
+  if (!envelope && payload.version >= 3) {
+    const historicalByDevice = new Map(
+      (device.historicalEncryptionKeys || []).map((entry) => [entry.deviceId, entry])
+    );
+    envelope = payload.envelopes.find((item) =>
+      String(item.userId) === String(currentUserId) && historicalByDevice.has(item.deviceId)
+    );
+    if (envelope) {
+      decryptionPrivateKey = await importHistoricalPrivateKey(
+        historicalByDevice.get(envelope.deviceId)
+      );
+    }
+  }
+  if (!envelope) {
+    legacyDevice = (device.localLegacyDevices || []).find((candidate) =>
+      payload.envelopes.some((item) => item.deviceId === candidate.deviceId &&
+        String(item.userId) === String(currentUserId))
+    );
+    if (legacyDevice) {
+      envelope = payload.envelopes.find((item) =>
+        item.deviceId === legacyDevice.deviceId &&
+        String(item.userId) === String(currentUserId)
+      );
+      decryptionPrivateKey = legacyDevice.encryptionPrivateKey;
+    }
+  }
+  if (!envelope) throw new Error("Message was not encrypted for this device or key backup");
 
   let wrappingKey;
   if (payload.version >= 3) {
-    if (!device.encryption?.privateKey) throw new Error("Device encryption key is unavailable");
+    if (!decryptionPrivateKey) throw new Error("Device encryption key is unavailable");
     wrappingKey = await deriveV3WrappingKey(
-      device.encryption.privateKey,
+      decryptionPrivateKey,
       envelope.ephemeralPublicKey,
-      device.deviceId,
+      envelope.deviceId,
       payload
     );
   } else {
+    const keyOwner = legacyDevice || device;
     const collection = envelope.keyType === "one-time"
-      ? (device.oneTimePreKeys || [])
-      : (device.signedPreKeys || []);
+      ? (keyOwner.oneTimePreKeys || [])
+      : (keyOwner.signedPreKeys || []);
     const preKey = collection.find((item) => item.keyId === envelope.keyId);
     if (!preKey) throw new Error("Required legacy pre-key is no longer available");
     wrappingKey = await deriveLegacyWrappingKey(
@@ -384,7 +594,8 @@ const unwrapMessageKey = async (message, payload, device) => {
   const messageKey = await importAndCacheMessageKey(cacheKey, payload, rawKey);
 
   if (payload.version < 3 && envelope.keyType === "one-time") {
-    device.oneTimePreKeys = (device.oneTimePreKeys || [])
+    const keyOwner = legacyDevice || device;
+    keyOwner.oneTimePreKeys = (keyOwner.oneTimePreKeys || [])
       .filter((item) => item.keyId !== envelope.keyId);
     await writeKey(`device:${device.userId}`, device);
   }
@@ -432,7 +643,10 @@ export const decryptMessages = async (messages) => Promise.all(messages.map(asyn
     return await decryptMessage(message);
   } catch (error) {
     console.error("E2EE decrypt error:", error);
-    return { ...message, text: "Không thể giải mã hoặc xác thực tin nhắn", image: null };
+    const text = error.message?.startsWith("Message was not encrypted for this device")
+      ? "Tin nhắn không có khóa dành cho thiết bị này"
+      : "Không thể giải mã hoặc xác thực tin nhắn";
+    return { ...message, text, image: null };
   }
 }));
 
@@ -442,4 +656,6 @@ export const resetE2EESession = () => {
   sessionController = null;
   currentUserId = null;
   devicePromise = null;
+  backupSyncPromise = null;
+  historicalPrivateKeys.clear();
 };

@@ -1,10 +1,12 @@
 import Device from "../model/Device.js";
 import ConversationMember from "../model/ConversationMember.js";
+import DeviceKeyBackup from "../model/DeviceKeyBackup.js";
 import {
   isPublicP256Key,
   parseEncryptionContext,
   isBase64WithByteLength,
   verifyDeviceEncryptionKeySignature,
+  validateEncryptedKeyBackup,
 } from "../lib/e2ee.js";
 
 const resolveBundleUserIds = async (context, requesterId) => {
@@ -123,6 +125,60 @@ export const getKeyBundles = async (req, res) => {
     return res.status(200).json({ context, bundles });
   } catch (error) {
     console.error("Get key bundles error:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+export const getDeviceKeyBackup = async (req, res) => {
+  try {
+    const record = await DeviceKeyBackup.findOne({ userId: req.user._id }).lean();
+    return res.status(200).json({
+      revision: record?.revision || 0,
+      backup: record?.backup || null,
+    });
+  } catch (error) {
+    console.error("Get device key backup error:", error);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+export const putDeviceKeyBackup = async (req, res) => {
+  try {
+    const { backup, expectedRevision } = req.body;
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0 ||
+      !validateEncryptedKeyBackup(backup)) {
+      return res.status(400).json({ message: "Invalid encrypted device-key backup" });
+    }
+
+    const existing = await DeviceKeyBackup.findOne({ userId: req.user._id });
+    if (!existing) {
+      if (expectedRevision !== 0) {
+        return res.status(409).json({ message: "Device-key backup changed" });
+      }
+      try {
+        const created = await DeviceKeyBackup.create({
+          userId: req.user._id,
+          revision: 1,
+          backup,
+        });
+        return res.status(200).json({ revision: created.revision });
+      } catch (error) {
+        if (error?.code === 11000) {
+          return res.status(409).json({ message: "Device-key backup changed" });
+        }
+        throw error;
+      }
+    }
+
+    const updated = await DeviceKeyBackup.findOneAndUpdate(
+      { userId: req.user._id, revision: expectedRevision },
+      { $set: { backup }, $inc: { revision: 1 } },
+      { new: true, runValidators: true }
+    );
+    if (!updated) return res.status(409).json({ message: "Device-key backup changed" });
+    return res.status(200).json({ revision: updated.revision });
+  } catch (error) {
+    console.error("Put device key backup error:", error);
     return res.status(500).json({ message: "Server error" });
   }
 };

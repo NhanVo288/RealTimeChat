@@ -5,6 +5,8 @@ import {
   E2EE_ALGORITHM,
   canonicalize,
   deviceEncryptionKeyData,
+  KEY_BACKUP_ITERATIONS,
+  validateEncryptedKeyBackup,
   parseEncryptionContext,
   unsignedPayload,
   validatePayloadShape,
@@ -129,4 +131,18 @@ test("v3 envelope shape has no pre-key metadata", async () => {
   assert.equal(Object.hasOwn(payload.envelopes[0], "keyId"), false);
   assert.equal(Object.hasOwn(payload.envelopes[0], "keyType"), false);
   assert.equal(validatePayloadShape(payload), true);
+});
+
+test("encrypted device-key backups enforce fixed KDF parameters and size limits", () => {
+  const backup = {
+    version: 1,
+    kdf: "PBKDF2-SHA256",
+    iterations: KEY_BACKUP_ITERATIONS,
+    salt: Buffer.alloc(16).toString("base64"),
+    iv: Buffer.alloc(12).toString("base64"),
+    ciphertext: Buffer.alloc(32).toString("base64"),
+  };
+  assert.equal(validateEncryptedKeyBackup(backup), true);
+  assert.equal(validateEncryptedKeyBackup({ ...backup, iterations: 1 }), false);
+  assert.equal(validateEncryptedKeyBackup({ ...backup, salt: "invalid" }), false);
 });

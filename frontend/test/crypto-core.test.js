@@ -6,6 +6,7 @@ import {
   canonicalize,
   deviceEncryptionKeyData,
   isCurrentMessageKeyCache,
+  mergeHistoricalKeyEntries,
   messageKeyCacheKey,
   peerIdentityPinKey,
   unsignedPayload,
@@ -75,5 +76,15 @@ test("device encryption-key signatures bind both device id and public key", () =
   assert.notEqual(
     deviceEncryptionKeyData("device-a", publicKey),
     deviceEncryptionKeyData("device-a", { ...publicKey, x: "other" })
+  );
+});
+
+test("historical device keys merge deterministically without replacing a device key", () => {
+  const first = { deviceId: "device-b", privateKeyPkcs8: "key-b" };
+  const second = { deviceId: "device-a", privateKeyPkcs8: "key-a" };
+  assert.deepEqual(mergeHistoricalKeyEntries([first], [second, first]), [second, first]);
+  assert.throws(
+    () => mergeHistoricalKeyEntries([first], [{ ...first, privateKeyPkcs8: "changed" }]),
+    /Conflicting historical device key/
   );
 });

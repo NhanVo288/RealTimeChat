@@ -275,6 +275,8 @@ Tất cả route `/api/messages/*` đều đi qua Arcjet và JWT authentication.
 | `PUT` | `/api/auth/devices/:deviceId` | Public identity key, public encryption key và chữ ký | Đăng ký/cập nhật public key bundle |
 | `DELETE` | `/api/auth/devices/:deviceId` | — | Revoke device |
 | `POST` | `/api/auth/keys/bundles` | `{ context }` | Server suy ra thành viên từ context và trả public key của các device |
+| `GET` | `/api/auth/keys/backup` | — | Lấy kho khóa lịch sử đã mã hóa và revision hiện tại |
+| `PUT` | `/api/auth/keys/backup` | `{ backup, expectedRevision }` | Ghi kho khóa bằng compare-and-swap |
 
 `deviceId` tối đa 100 ký tự. Identity key và encryption key đã đăng ký không được thay thế trên cùng một device. Endpoint bundle không tiêu thụ key và chỉ trả device thuộc direct chat hoặc group mà requester là thành viên.
 
@@ -462,10 +464,19 @@ Sau signup, login hoặc khôi phục phiên:
 3. Nếu chưa có, client tạo UUID `deviceId`, identity key ECDSA P-256 và static encryption key ECDH P-256.
 4. Identity private key ký canonical data gồm `deviceId` và public encryption key.
 5. Client upload hai public key, chữ ký và metadata lên backend. Backend xác minh chữ ký trước khi lưu.
+6. Khi có mật khẩu từ signup/login, client mở kho khóa lịch sử, hợp nhất khóa ECDH của device
+   hiện tại rồi ghi lại ciphertext bằng compare-and-swap. Mật khẩu và plaintext của kho khóa
+   không được gửi qua endpoint backup.
 
 Device local từ protocol v1/v2 được tự động bổ sung static encryption key khi đăng nhập. Các private prekey cũ chỉ còn được giữ local để giải mã lịch sử v1/v2.
 
-Private key được import lại thành `CryptoKey` với `extractable=false` trước khi lưu. Kết nối IndexedDB được cache và dùng lại thay vì mở/đóng database cho từng thao tác.
+Khi login lại bằng mật khẩu, device v3 cũ có static private key non-extractable được tự động thay
+bằng một device có khóa có thể backup. Khóa cũ vẫn được giữ local để browser gốc đọc lịch sử, còn
+đăng ký public key cũ được revoke để message mới chỉ phụ thuộc vào khóa có thể đồng bộ.
+
+Private key dùng trực tiếp được import lại thành `CryptoKey` với `extractable=false` trước khi lưu.
+Device mới còn giữ bản PKCS#8 để đặt bên trong kho khóa đã mã hóa; dữ liệu này không được upload
+dạng rõ. Kết nối IndexedDB được cache và dùng lại thay vì mở/đóng database cho từng thao tác.
 
 ### Mã hóa khi gửi
 
@@ -485,8 +496,9 @@ Backend không giải mã nhưng kiểm tra version/algorithm, chữ ký payload
 
 1. Xác minh chữ ký toàn payload bằng sender signing key.
 2. Pin fingerprint `<x>.<y>` theo `senderDeviceId` bằng TOFU.
-3. Tìm envelope có `deviceId` của device hiện tại.
-4. Lấy static ECDH private key của device hiện tại trong IndexedDB.
+3. Tìm envelope có `deviceId` của device hiện tại; nếu không có thì tìm envelope khớp một khóa
+   lịch sử của chính user đã được khôi phục từ kho khóa.
+4. Lấy static ECDH private key tương ứng trong IndexedDB.
 5. Kết hợp private key này với ephemeral public key trong envelope, derive wrapping key bằng ECDH + HKDF và mở message key.
 6. Cache `CryptoKey` non-extractable cùng chữ ký payload theo `message-key:<userId>:<messageId>`. Khi edit tạo signature/revision mới, cache cũ bị thay và message key mới được unwrap.
 7. Dùng message key, IV và AAD để giải mã nội dung.
@@ -516,7 +528,13 @@ Nếu signature sai, identity key thay đổi, thiếu envelope hoặc không c�
 - Unique compound index `{ userId, deviceId }`.
 - Public identity signing key, public static encryption key và chữ ký của encryption key.
 - `lastSeenAt`, `revokedAt` và timestamps.
-- Backend không lưu private device key.
+- Backend không lưu private device key dạng rõ.
+
+### `DeviceKeyBackup`
+
+- Unique `userId`, revision tăng dần để chống lost update giữa nhiều browser.
+- Chỉ chứa salt, IV, thông số KDF và ciphertext AES-GCM do frontend tạo.
+- Backend kiểm tra định dạng/kích thước nhưng không thể giải mã nội dung kho khóa.
 
 ### `Conversation`
 
@@ -549,8 +567,12 @@ E2EE che nội dung `text` và `image`, nhưng backend vẫn thấy user/device/
 
 ### Giới hạn thiết bị và lịch sử
 
-- Device mới chỉ giải mã message được gửi sau khi device đó đăng ký và được đưa vào envelope.
-- Chưa có cơ chế chuyển lịch sử hoặc private key an toàn giữa device.
+- Khi signup hoặc login bằng mật khẩu, client đồng bộ một kho khóa lịch sử được mã hóa bằng
+  PBKDF2-SHA256/AES-256-GCM. Backend chỉ lưu ciphertext và không có mật khẩu hay private key
+  dạng rõ. Device mới có thể dùng các khóa lịch sử trong kho này để mở envelope của chính user.
+- Khóa của browser được tạo trước khi cơ chế backup được triển khai là non-extractable nên không
+  thể đưa ngược vào kho khóa. Message cũ chỉ có envelope cho những khóa legacy này vẫn cần được
+  đọc trên browser gốc; các device được tạo sau bản cập nhật sẽ đồng bộ lịch sử bình thường.
 - Xóa IndexedDB/browser profile làm mất private device key và cached message key trên device đó.
 - Revoke device ngăn nhận envelope mới nhưng không xóa dữ liệu private đã tồn tại trên device bị revoke.
 - TOFU chưa có safety number/QR/out-of-band verification.

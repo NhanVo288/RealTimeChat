@@ -1,5 +1,7 @@
 export const E2EE_ALGORITHM = "ECDH-P256/HKDF-SHA256/AES-256-GCM";
 export const E2EE_VERSION = 3;
+export const KEY_BACKUP_VERSION = 1;
+export const KEY_BACKUP_ITERATIONS = 600_000;
 
 export const canonicalize = (value) => {
   if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
@@ -56,3 +58,23 @@ export const isCurrentMessageKeyCache = (cached, payload) => Boolean(
 
 export const peerIdentityPinKey = (ownerUserId, peerUserId, deviceId) =>
   `peer-pin:${ownerUserId}:${peerUserId}:${deviceId}`;
+
+export const mergeHistoricalKeyEntries = (...collections) => {
+  const entries = new Map();
+  collections.flat().forEach((entry) => {
+    if (!entry || typeof entry.deviceId !== "string" || !entry.deviceId ||
+      entry.deviceId.length > 100 || typeof entry.privateKeyPkcs8 !== "string" ||
+      !entry.privateKeyPkcs8) return;
+    const existing = entries.get(entry.deviceId);
+    if (existing && existing.privateKeyPkcs8 !== entry.privateKeyPkcs8) {
+      throw new Error("Conflicting historical device key");
+    }
+    entries.set(entry.deviceId, {
+      deviceId: entry.deviceId,
+      privateKeyPkcs8: entry.privateKeyPkcs8,
+    });
+  });
+  return [...entries.values()].sort((first, second) =>
+    first.deviceId.localeCompare(second.deviceId)
+  );
+};

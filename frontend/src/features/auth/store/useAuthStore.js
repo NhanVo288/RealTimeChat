@@ -7,9 +7,9 @@ import { initializeE2EE, resetE2EESession } from "../../../shared/lib/crypto";
 
 const BASE_URL = import.meta.env.VITE_BACKEND_URL ||
   (import.meta.env.MODE === "development" ? "http://localhost:3000" : "/");
-const activateE2EE = async (userId, set, get) => {
+const activateE2EE = async (userId, set, get, backupPassword) => {
   try {
-    await initializeE2EE(userId);
+    await initializeE2EE(userId, { backupPassword });
     if (get().authUser?._id === userId) {
       set({ isE2EEReady: true, e2eeError: null });
     }
@@ -48,7 +48,7 @@ export const useAuthStore = create((set,get) => ({
     try {
       const res = await axiosInstance.post("/auth/signup", data);
       set({ authUser: res.data });
-      await activateE2EE(res.data._id, set, get);
+      await activateE2EE(res.data._id, set, get, data.password);
       toast.success("Tao tai khoan thanh cong");
       get().connectSocket()
     } catch (error) {
@@ -62,7 +62,7 @@ export const useAuthStore = create((set,get) => ({
     try {
       const res = await axiosInstance.post("/auth/login", data);
       set({ authUser: res.data });
-      await activateE2EE(res.data._id, set, get);
+      await activateE2EE(res.data._id, set, get, data.password);
       toast.success("Dang nhap thanh cong");
 
       get().connectSocket()

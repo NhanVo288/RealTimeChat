@@ -2,6 +2,8 @@ import { webcrypto } from "node:crypto";
 
 export const E2EE_ALGORITHM = "ECDH-P256/HKDF-SHA256/AES-256-GCM";
 export const E2EE_VERSION = 3;
+export const KEY_BACKUP_VERSION = 1;
+export const KEY_BACKUP_ITERATIONS = 600_000;
 
 const objectIdPattern = /^[a-f\d]{24}$/i;
 const base64Pattern = /^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/;
@@ -72,6 +74,15 @@ export const isBase64WithByteLength = (value, minimum, maximum = minimum) => {
   const decoded = decodeBase64(value);
   return Boolean(decoded && decoded.length >= minimum && decoded.length <= maximum);
 };
+
+export const validateEncryptedKeyBackup = (backup) => Boolean(
+  backup && backup.version === KEY_BACKUP_VERSION &&
+  backup.kdf === "PBKDF2-SHA256" &&
+  backup.iterations === KEY_BACKUP_ITERATIONS &&
+  isBase64WithByteLength(backup.salt, 16) &&
+  isBase64WithByteLength(backup.iv, 12) &&
+  isBase64WithByteLength(backup.ciphertext, 16, 2_000_000)
+);
 
 export const validatePayloadShape = (payload) => {
   if (!payload || payload.version !== E2EE_VERSION || payload.algorithm !== E2EE_ALGORITHM ||
