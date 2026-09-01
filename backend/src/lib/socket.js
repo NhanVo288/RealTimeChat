@@ -38,6 +38,15 @@ export function emitToUser(userId, event, payload) {
     if (sockets?.size) io.to([...sockets]).emit(event, payload)
 }
 
+export function disconnectSession(sessionId, reason = "revoked") {
+    if (!sessionId) return
+    for (const socket of io.sockets.sockets.values()) {
+        if (socket.sessionId !== sessionId) continue
+        socket.emit("session-revoked", { reason })
+        socket.disconnect(true)
+    }
+}
+
 // Keep all tabs/devices for a user so one reconnect cannot mark another offline.
 const userSocketMap = new Map()
 

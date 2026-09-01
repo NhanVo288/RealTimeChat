@@ -160,6 +160,17 @@ export const useChatStore = create((set, get) => ({
     };
     eventSource.addEventListener("message-updated", updateMessage);
     eventSource.addEventListener("message-deleted", updateMessage);
+    eventSource.addEventListener("session-revoked", (event) => {
+      const { reason } = JSON.parse(event.data || "{}");
+      eventSource.close();
+      set({ conversationEventSource: null });
+      if (reason === "replaced") {
+        useAuthStore.getState().handleSessionReplaced();
+        queueMicrotask(() => get().subscribeToConversationEvents());
+      } else if (reason !== "logout") {
+        useAuthStore.getState().handleSessionRevoked();
+      }
+    });
     eventSource.onerror = () => {
       if (eventSource.readyState === EventSource.CLOSED) {
         set({ conversationEventSource: null });

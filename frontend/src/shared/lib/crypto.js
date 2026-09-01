@@ -124,26 +124,35 @@ const createDevice = async (userId) => {
   return { userId, deviceId, identity, encryption };
 };
 
+const replaceDevice = async (device, revokePrevious) => {
+  const replacement = await createDevice(device.userId);
+  const previousBackupKey = device.encryption?.privateKeyPkcs8
+    ? [{ deviceId: device.deviceId, privateKeyPkcs8: device.encryption.privateKeyPkcs8 }]
+    : [];
+  replacement.historicalEncryptionKeys = mergeHistoricalKeyEntries(
+    device.historicalEncryptionKeys || [],
+    previousBackupKey
+  );
+  replacement.localLegacyDevices = [
+    ...(device.localLegacyDevices || []),
+    {
+      deviceId: device.deviceId,
+      encryptionPrivateKey: device.encryption?.privateKey,
+      oneTimePreKeys: device.oneTimePreKeys || [],
+      signedPreKeys: device.signedPreKeys || [],
+    },
+  ];
+  replacement.obsoleteDeviceIds = revokePrevious
+    ? [...(device.obsoleteDeviceIds || []), device.deviceId]
+    : [];
+  return replacement;
+};
+
 const migrateDevice = async (device, allowKeyRotation) => {
   if (!device.encryption?.privateKey || !device.encryption?.publicKey) {
     device.encryption = await generateKeyPair("ECDH", ["deriveBits"], true);
   } else if (!device.encryption.privateKeyPkcs8 && allowKeyRotation) {
-    const replacement = await createDevice(device.userId);
-    replacement.historicalEncryptionKeys = device.historicalEncryptionKeys || [];
-    replacement.localLegacyDevices = [
-      ...(device.localLegacyDevices || []),
-      {
-        deviceId: device.deviceId,
-        encryptionPrivateKey: device.encryption.privateKey,
-        oneTimePreKeys: device.oneTimePreKeys || [],
-        signedPreKeys: device.signedPreKeys || [],
-      },
-    ];
-    replacement.obsoleteDeviceIds = [
-      ...(device.obsoleteDeviceIds || []),
-      device.deviceId,
-    ];
-    return replacement;
+    return replaceDevice(device, true);
   }
   if (!device.encryption.signature) {
     device.encryption.signature = await signDeviceEncryptionKey(
@@ -327,7 +336,17 @@ export const initializeE2EE = async (userId, { backupPassword } = {}) => {
       else device = await migrateDevice(device, Boolean(backupPassword));
       assertActiveSession(device, version);
       await writeKey(`device:${normalizedUserId}`, device);
-      return registerDevice(device, version);
+      try {
+        return await registerDevice(device, version);
+      } catch (error) {
+        const wasRevoked = error.response?.status === 409 &&
+          error.response?.data?.message === "Device has been revoked";
+        if (!backupPassword || !wasRevoked) throw error;
+        device = await replaceDevice(device, false);
+        assertActiveSession(device, version);
+        await writeKey(`device:${normalizedUserId}`, device);
+        return registerDevice(device, version);
+      }
     })().catch((error) => {
       if (version === sessionVersion) devicePromise = null;
       throw error;

@@ -60,6 +60,7 @@ export const sendMessage = async (req, res) => {
     const conversation = await getOrCreateDirectConversation(senderId, receiverId);
     if (!(await validateEncryptedPayload(encryptedPayload, senderId, conversation._id, {
       expectedRevision: 0,
+      expectedAuthSessionId: req.authSession._id,
     }))) {
       return res.status(400).json({ message: "A valid E2EE payload is required" });
     }
@@ -126,7 +127,11 @@ export const editMessage = async (req, res) => {
       encryptedPayload,
       req.user._id,
       existingMessage.conversationId,
-      { expectedMessageId: stableMessageId, expectedRevision: currentRevision + 1 }
+      {
+        expectedMessageId: stableMessageId,
+        expectedRevision: currentRevision + 1,
+        expectedAuthSessionId: req.authSession._id,
+      }
     ))) return res.status(400).json({ message: "A valid E2EE payload is required" });
 
     const revisionFilter = currentRevision === 0

@@ -16,6 +16,12 @@ const deviceSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
     deviceId: { type: String, required: true },
+    authSessionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AuthSession",
+      default: null,
+      index: true,
+    },
     name: { type: String, default: "Browser", maxlength: 120 },
     identitySigningKey: { type: publicKeySchema, required: true },
     encryptionPublicKey: { type: publicKeySchema, default: null },

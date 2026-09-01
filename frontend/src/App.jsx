@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from "react-router";
 import LoginPage from "./features/auth/pages/LoginPage";
 import ChatPage from "./features/chat/pages/ChatPage";
 import SignUpPage from "./features/auth/pages/SignUpPage";
+import DeviceSecurityPage from "./features/security/pages/DeviceSecurityPage";
 import { useAuthStore } from "./features/auth/store/useAuthStore";
 import { useEffect } from "react";
 import Loader from "./shared/components/Loader";
@@ -34,6 +35,10 @@ export default function App() {
         <Route
           path="/signup"
           element={!authUser ? <SignUpPage /> : <Navigate to={"/"} />}
+        />
+        <Route
+          path="/security/devices"
+          element={authUser ? <DeviceSecurityPage /> : <Navigate to={"/login"} />}
         />
       </Routes>
       <Toaster />

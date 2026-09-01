@@ -14,7 +14,7 @@ export const validateEncryptedPayload = async (
   payload,
   senderId,
   conversationId,
-  { expectedMessageId = null, expectedRevision = 0 } = {}
+  { expectedMessageId = null, expectedRevision = 0, expectedAuthSessionId = null } = {}
 ) => {
   if (!validatePayloadShape(payload) || payload.version !== E2EE_VERSION ||
     payload.algorithm !== E2EE_ALGORITHM || payload.senderUserId !== String(senderId) ||
@@ -24,6 +24,7 @@ export const validateEncryptedPayload = async (
     userId: senderId,
     deviceId: payload.senderDeviceId,
     revokedAt: null,
+    ...(expectedAuthSessionId ? { authSessionId: expectedAuthSessionId } : {}),
     encryptionPublicKey: { $ne: null },
     encryptionKeySignature: { $ne: null },
   }).lean();

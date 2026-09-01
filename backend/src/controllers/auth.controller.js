@@ -1,9 +1,13 @@
 import User from "../model/User.js";
-import { generateToken } from "../lib/utils.js";
+import jwt from "jsonwebtoken";
+import { clearAuthCookie, generateToken } from "../lib/utils.js";
 import bcrypt from "bcryptjs";
 import { sendWelcomeEmail } from "../email/emailHandler.js";
 import { ENV } from "../lib/env.js";
 import cloudinary from "../lib/cloudinary.js";
+import { createAuthSession, revokeAuthSession } from "../services/auth-session.service.js";
+import { disconnectSession } from "../lib/socket.js";
+import { closeSessionStreams } from "../services/event.service.js";
 export const signUp = async (req, res) => {
   try {
     const { fullName, email, password } = req.body;
@@ -35,7 +39,8 @@ export const signUp = async (req, res) => {
     });
 
     const saveUser = await newUser.save();
-    generateToken(saveUser._id, res);
+    const authSession = await createAuthSession(saveUser._id, req);
+    generateToken(saveUser._id, authSession.sessionId, res);
     res.status(201).json({
       _id: saveUser._id,
       fullName: saveUser.fullName,
@@ -64,7 +69,8 @@ export const login = async (req, res) => {
     const isPasswordCorrect = await bcrypt.compare(password, user.password);
     if (!isPasswordCorrect)
       return res.status(400).json({ message: "Invalid credentials" });
-    generateToken(user._id, res);
+    const authSession = await createAuthSession(user._id, req);
+    generateToken(user._id, authSession.sessionId, res);
     res.status(200).json({
       _id: user._id,
       fullName: user.fullName,
@@ -77,15 +83,24 @@ export const login = async (req, res) => {
   }
 };
 
-export const logout = (_, res) => {
-  res.cookie("jwt", "", {
-    maxAge: 0,
-    httpOnly: true,
-    sameSite: "none",
-    secure: true,
-  });
-
+export const logout = async (req, res) => {
+  const token = req.cookies.jwt;
+  let sessionId = null;
+  try {
+    const decoded = token ? jwt.verify(token, ENV.JWT_SECRET) : null;
+    sessionId = decoded?.sessionId || null;
+    if (sessionId) {
+      await revokeAuthSession(sessionId, decoded.userId);
+    }
+  } catch {
+    // Clearing an invalid cookie is still a successful logout.
+  }
+  clearAuthCookie(res);
   res.status(200).json({ message: "Logout Successfully" });
+  if (sessionId) {
+    disconnectSession(sessionId, "logout");
+    closeSessionStreams(sessionId, "logout");
+  }
 };
 
 

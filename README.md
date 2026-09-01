@@ -27,7 +27,8 @@ RealTimeChat là ứng dụng chat thời gian thực full-stack sử dụng Rea
 
 - Đăng ký, đăng nhập, đăng xuất và kiểm tra phiên đăng nhập.
 - Mật khẩu được băm bằng `bcryptjs` với salt trước khi lưu MongoDB.
-- JWT có thời hạn 7 ngày và được lưu trong HTTP-only cookie.
+- JWT có thời hạn 7 ngày, được lưu trong HTTP-only cookie và chứa `sessionId` riêng cho mỗi lần đăng nhập.
+- Session được liên kết với đúng device E2EE; revoke device đồng thời vô hiệu hóa session và kết nối realtime.
 - Cập nhật ảnh đại diện qua Cloudinary.
 - Gửi email chào mừng bằng Resend sau khi đăng ký; lỗi gửi email không làm thất bại thao tác đăng ký.
 - Route bảo vệ bằng JWT middleware và Arcjet (shield, bot detection, rate limit).
@@ -255,15 +256,15 @@ Response health check:
 
 ## API
 
-Tất cả route `/api/messages/*` đều đi qua Arcjet và JWT authentication. Trong `/api/auth`, signup/login/logout đi qua Arcjet; các route profile/device/key còn yêu cầu JWT.
+Tất cả route `/api/messages/*` đều đi qua Arcjet và JWT/session authentication. Trong `/api/auth`, signup/login/logout đi qua Arcjet; các route profile/device/key còn yêu cầu JWT có `AuthSession` chưa hết hạn hoặc bị revoke.
 
 ### Auth
 
 | Method | Endpoint | Auth | Body chính | Mô tả |
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/auth/signup` | Không | `{ fullName, email, password }` | Tạo tài khoản; password tối thiểu 6 ký tự |
-| `POST` | `/api/auth/login` | Không | `{ email, password }` | Đăng nhập và set JWT cookie |
-| `POST` | `/api/auth/logout` | Không | — | Xóa JWT cookie |
+| `POST` | `/api/auth/login` | Không | `{ email, password }` | Tạo `AuthSession` và set JWT cookie có `sessionId` |
+| `POST` | `/api/auth/logout` | Không | — | Revoke session hiện tại, xóa JWT cookie và ngắt realtime |
 | `GET` | `/api/auth/check` | Có | — | Trả user của phiên hiện tại, không gồm password |
 | `PUT` | `/api/auth/update-profile` | Có | `{ profilePic }` | Upload ảnh đại diện lên Cloudinary |
 
@@ -273,12 +274,22 @@ Tất cả route `/api/messages/*` đều đi qua Arcjet và JWT authentication.
 | --- | --- | --- | --- |
 | `GET` | `/api/auth/devices` | — | Liệt kê device chưa revoke của user |
 | `PUT` | `/api/auth/devices/:deviceId` | Public identity key, public encryption key và chữ ký | Đăng ký/cập nhật public key bundle |
-| `DELETE` | `/api/auth/devices/:deviceId` | — | Revoke device |
+| `DELETE` | `/api/auth/devices/:deviceId` | — | Revoke device, session liên kết, Socket.IO và SSE |
 | `POST` | `/api/auth/keys/bundles` | `{ context }` | Server suy ra thành viên từ context và trả public key của các device |
 | `GET` | `/api/auth/keys/backup` | — | Lấy kho khóa lịch sử đã mã hóa và revision hiện tại |
 | `PUT` | `/api/auth/keys/backup` | `{ backup, expectedRevision }` | Ghi kho khóa bằng compare-and-swap |
 
 `deviceId` tối đa 100 ký tự. Identity key và encryption key đã đăng ký không được thay thế trên cùng một device. Endpoint bundle không tiêu thụ key và chỉ trả device thuộc direct chat hoặc group mà requester là thành viên.
+
+Mỗi session chỉ được bind với một `deviceId`. Khi browser đăng nhập lại và đăng ký cùng device,
+session cũ của device bị thay thế. Payload gửi message còn phải có `senderDeviceId` bind với chính
+session thực hiện request. Cookie JWT từ trước bản nâng cấp được middleware tự tạo `AuthSession`
+và cấp lại cookie mới ở request HTTP hợp lệ đầu tiên.
+
+Frontend có trang `/security/devices`, mở từ biểu tượng khiên cạnh hồ sơ. Không thể revoke nhầm
+browser hiện tại trên UI; revoke browser khác sẽ đăng xuất browser đó từ xa.
+Nếu chủ tài khoản đăng nhập lại bằng mật khẩu trên browser đã bị revoke, client tạo identity/device
+mới và bind session mới; cookie cũ không có mật khẩu không thể tự thực hiện bước phục hồi này.
 
 ### Direct chat
 
@@ -332,12 +343,16 @@ Edit chỉ áp dụng cho message chưa bị thu hồi và user vẫn thuộc co
 
 ### Socket.IO
 
-Socket handshake đọc JWT từ cookie và gắn `socket.user`/`socket.userId`. Backend giữ `Map<userId, Set<socketId>>`, do đó một user có thể online đồng thời ở nhiều tab hoặc thiết bị.
+Socket handshake đọc JWT từ cookie, xác minh `AuthSession`, rồi gắn `socket.userId` và
+`socket.sessionId`. Backend giữ `Map<userId, Set<socketId>>`, do đó một user có thể online đồng
+thời ở nhiều tab hoặc thiết bị. Khi session bị revoke, server emit `session-revoked` rồi chủ động
+disconnect mọi socket thuộc session đó.
 
 | Event | Hướng | Payload | Mục đích |
 | --- | --- | --- | --- |
 | `getOnlineUser` | Server → client | Mảng user ID | Đồng bộ danh sách user online |
 | `newMessage` | Server → client | Message đã persist | Nhận message realtime |
+| `session-revoked` | Server → client | `{ reason }` | Xóa state đăng nhập trên browser bị thu hồi |
 
 Direct message được emit đến tất cả socket của người nhận. Group message được emit đến các member khác người gửi. Sender đã có response HTTP để reconcile optimistic message nên frontend bỏ qua socket message do chính mình gửi nếu có.
 
@@ -346,6 +361,7 @@ Socket.IO client bật reconnect vô hạn, delay từ 1 đến 10 giây và tim
 ### SSE
 
 `GET /api/messages/events` mở EventSource có cookie. Server gửi heartbeat mỗi 15 giây và tắt buffering qua header `X-Accel-Buffering: no`.
+Mỗi stream cũng được index theo `sessionId`; revoke sẽ gửi `session-revoked` và đóng stream ngay.
 
 | Event | Nội dung |
 | --- | --- |
@@ -527,8 +543,15 @@ Nếu signature sai, identity key thay đổi, thiếu envelope hoặc không c�
 
 - Unique compound index `{ userId, deviceId }`.
 - Public identity signing key, public static encryption key và chữ ký của encryption key.
+- `authSessionId` trỏ đến session hiện đang sở hữu device.
 - `lastSeenAt`, `revokedAt` và timestamps.
 - Backend không lưu private device key dạng rõ.
+
+### `AuthSession`
+
+- UUID `sessionId` unique, `userId`, `deviceId`, user agent và thời điểm hoạt động gần nhất.
+- `expiresAt` có TTL index; `revokedAt` cho logout, thay thế session hoặc revoke từ xa.
+- JWT và Socket.IO đều bị từ chối nếu session không tồn tại, hết hạn hoặc đã revoke.
 
 ### `DeviceKeyBackup`
 
@@ -574,7 +597,8 @@ E2EE che nội dung `text` và `image`, nhưng backend vẫn thấy user/device/
   thể đưa ngược vào kho khóa. Message cũ chỉ có envelope cho những khóa legacy này vẫn cần được
   đọc trên browser gốc; các device được tạo sau bản cập nhật sẽ đồng bộ lịch sử bình thường.
 - Xóa IndexedDB/browser profile làm mất private device key và cached message key trên device đó.
-- Revoke device ngăn nhận envelope mới nhưng không xóa dữ liệu private đã tồn tại trên device bị revoke.
+- Revoke device ngăn nhận envelope mới, vô hiệu hóa session liên kết và ngắt Socket.IO/SSE,
+  nhưng không thể xóa dữ liệu private đã tồn tại trên device bị revoke.
 - TOFU chưa có safety number/QR/out-of-band verification.
 - Thu hồi message không thể xóa plaintext người nhận đã xem, chụp hoặc lưu trước đó.
 
@@ -588,7 +612,7 @@ E2EE che nội dung `text` và `image`, nhưng backend vẫn thấy user/device/
 
 ### Hạn chế hiện tại
 
-- Test hiện bao phủ canonical signature, identity/message/revision binding, key signature, payload shape và cache invalidation; chưa có browser E2E test chạy qua nhiều tab/device thật.
+- Automated test hiện bao phủ 14 test ở mức unit/protocol; chưa có integration test dùng MongoDB thật hoặc browser E2E tự động chạy qua nhiều tab/device và revoke session.
 - Chưa có delivery/read receipt theo từng message cho phía sender; read cursor hiện phục vụ unread của chính user.
 - Chưa có typing indicator, reply UI, file attachment tổng quát, mute/pin UI hoặc push notification.
 - SSE client state và Socket user map nằm trong memory của một Node process. Khi scale ngang cần shared pub/sub và Socket.IO adapter như Redis.
@@ -628,13 +652,53 @@ Trước khi deploy:
 - sao lưu MongoDB;
 - đánh giá giới hạn body 10 MB vì ảnh message nằm trong encrypted JSON.
 
-## Kiểm tra source
+## Kiểm thử
+
+### Chạy toàn bộ kiểm tra
 
 ```powershell
 npm test
 npm run lint --prefix frontend
 npm run build --prefix frontend
 ```
+
+Có thể chạy riêng từng phần:
+
+```powershell
+npm run test --prefix backend
+npm run test --prefix frontend
+npm run lint --prefix frontend
+npm run build --prefix frontend
+```
+
+Kết quả kiểm tra hiện tại:
+
+| Phần | Công cụ/lệnh | Số lượng | Trạng thái |
+| --- | --- | ---: | --- |
+| Backend unit/protocol | Node.js test runner | 8 test | Pass |
+| Frontend crypto core | Node.js test runner | 6 test | Pass |
+| Frontend static analysis | ESLint | Toàn bộ `frontend` | Pass |
+| Frontend production bundle | Vite build | 1 build | Pass |
+
+Backend test bao phủ:
+
+- JWT bind `userId` với `sessionId` và cấu hình HTTP-only cookie.
+- Xóa cookie khi logout dùng cùng cookie scope với lúc phát hành.
+- Chữ ký identity của public encryption key theo đúng `deviceId`.
+- Chữ ký payload bind message ID, sender ID và edit revision.
+- Từ chối envelope trùng device và IV sai kích thước.
+- Kiểm tra direct/group encryption context và canonical ordering.
+- Kiểm tra shape envelope E2EE v3 không còn metadata pre-key cũ.
+- Kiểm tra định dạng, KDF parameters và giới hạn kích thước encrypted key backup.
+
+Frontend test bao phủ:
+
+- Message-key cache bị invalid khi signature/revision thay đổi.
+- Metadata được ký bind sender, message identity, revision và content type.
+- Giữ tương thích canonical signature của payload v1 đã lưu.
+- Identity pin được scope theo owner user, peer user và peer device.
+- Chữ ký encryption key bind cả public key lẫn device ID.
+- Hợp nhất historical device keys theo thứ tự ổn định và từ chối thay khóa cùng device ID.
 
 Kiểm tra syntax toàn bộ backend:
 
@@ -653,6 +717,12 @@ Checklist kiểm tra thủ công:
 6. Scroll lên lịch sử, nhận message mới và xác nhận UI không ép scroll xuống nếu không ở gần đáy.
 7. Tạo group, thêm/loại member, sửa/thu hồi message và kiểm tra SSE.
 8. Xác nhận backend lưu `text` rỗng và chỉ có `encryptedPayload` cho message E2EE mới.
+9. Đăng nhập cùng tài khoản trên browser A và B; từ A mở `/security/devices` và revoke B.
+10. Xác nhận B nhận `session-revoked`, xóa auth state, Socket.IO/SSE bị đóng và request tiếp theo bị trả `401`.
+11. Gửi message mới từ một thành viên khác và xác nhận key bundle/envelope không còn device B đã revoke.
+12. Thử gửi payload bằng sender device/session đã revoke và xác nhận backend từ chối.
+13. Đăng nhập lại hợp lệ trên B bằng mật khẩu và xác nhận client tạo device ID mới, bind session mới và đồng bộ encrypted key backup.
+14. Mở nhiều tab cùng browser, thay session bằng lần login mới và xác nhận tab cũ reconnect thay vì revoke nhầm session mới.
 
 ## License
 

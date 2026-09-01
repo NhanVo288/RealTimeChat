@@ -9,14 +9,14 @@ const BASE_URL = import.meta.env.VITE_BACKEND_URL ||
   (import.meta.env.MODE === "development" ? "http://localhost:3000" : "/");
 const activateE2EE = async (userId, set, get, backupPassword) => {
   try {
-    await initializeE2EE(userId, { backupPassword });
+    const device = await initializeE2EE(userId, { backupPassword });
     if (get().authUser?._id === userId) {
-      set({ isE2EEReady: true, e2eeError: null });
+      set({ isE2EEReady: true, e2eeError: null, currentDeviceId: device.deviceId });
     }
   } catch (error) {
     console.error("E2EE initialization error:", error);
     if (get().authUser?._id === userId) {
-      set({ isE2EEReady: false, e2eeError: error.message });
+      set({ isE2EEReady: false, e2eeError: error.message, currentDeviceId: null });
     }
   }
 };
@@ -29,8 +29,10 @@ export const useAuthStore = create((set,get) => ({
   socket: null,
   onlineUsers: [],
   socketConnectionVersion: 0,
+  sessionReconnectPending: false,
   isE2EEReady: false,
   e2eeError: null,
+  currentDeviceId: null,
   checkAuth: async () => {
     try {
       const res = await axiosInstance.get("/auth/check");
@@ -38,7 +40,7 @@ export const useAuthStore = create((set,get) => ({
       await activateE2EE(res.data._id, set, get);
     } catch (error) {
       console.log(error);
-      set({ authUser: null, isE2EEReady: false, e2eeError: null });
+      set({ authUser: null, isE2EEReady: false, e2eeError: null, currentDeviceId: null });
     } finally {
       set({ isCheckingAuth: false });
     }
@@ -75,7 +77,7 @@ export const useAuthStore = create((set,get) => ({
   logOut: async () => {
     try {
       await axiosInstance.post("/auth/logout");
-      set({authUser: null, isE2EEReady: false, e2eeError: null})
+      set({authUser: null, isE2EEReady: false, e2eeError: null, currentDeviceId: null})
       resetE2EESession();
       toast.success("Đăng xuất thành công")
       get().disconnectSocket()
@@ -118,15 +120,52 @@ export const useAuthStore = create((set,get) => ({
     socket.on("getOnlineUser", (userIds) => {
       set({onlineUsers: userIds})
     })
+    socket.on("session-revoked", ({ reason } = {}) => {
+      if (reason === "replaced") get().handleSessionReplaced();
+      else if (reason !== "logout") get().handleSessionRevoked();
+    })
     socket.on("disconnect", () => {
       set({ onlineUsers: get().onlineUsers.filter((id) => id !== authUser._id) });
     })
     socket.on("connect_error", (error) => {
       console.error("Socket connection error:", error.message);
+      if (/session|revoked|unauthorized/i.test(error.message)) {
+        get().handleSessionRevoked();
+      }
     })
   },
   disconnectSocket: () => {
    get().socket?.disconnect()
-   set({ socket: null, onlineUsers: [], socketConnectionVersion: 0 })
-  }
+   set({
+     socket: null,
+     onlineUsers: [],
+     socketConnectionVersion: 0,
+     sessionReconnectPending: false,
+   })
+  },
+  handleSessionRevoked: () => {
+    if (!get().authUser) return;
+    get().socket?.disconnect();
+    resetE2EESession();
+    set({
+      authUser: null,
+      isE2EEReady: false,
+      e2eeError: null,
+      currentDeviceId: null,
+      socket: null,
+      onlineUsers: [],
+      socketConnectionVersion: 0,
+      sessionReconnectPending: false,
+    });
+    toast.error("Thiết bị này đã bị thu hồi");
+  },
+  handleSessionReplaced: () => {
+    if (!get().authUser || get().sessionReconnectPending) return;
+    get().socket?.disconnect();
+    set({ socket: null, socketConnectionVersion: 0, sessionReconnectPending: true });
+    queueMicrotask(() => {
+      set({ sessionReconnectPending: false });
+      get().connectSocket();
+    });
+  },
 }));

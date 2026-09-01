@@ -1,5 +1,6 @@
 import { useState, useRef } from "react";
-import { LogOutIcon, VolumeOffIcon, Volume2Icon } from "lucide-react";
+import { LogOutIcon, ShieldCheckIcon, VolumeOffIcon, Volume2Icon } from "lucide-react";
+import { Link } from "react-router";
 import { useAuthStore } from "../../auth/store/useAuthStore";
 import { useChatStore } from "../store/useChatStore";
 
@@ -67,6 +68,15 @@ function ProfileHeader() {
 
         {/* BUTTONS */}
         <div className="flex gap-4 items-center">
+          <Link
+            to="/security/devices"
+            aria-label="Quản lý thiết bị"
+            title="Quản lý thiết bị"
+            className="text-slate-400 hover:text-cyan-300 transition-colors"
+          >
+            <ShieldCheckIcon className="size-5" />
+          </Link>
+
           {/* LOGOUT BTN */}
           <button
             className="text-slate-400 hover:text-slate-200 transition-colors"

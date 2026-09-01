@@ -1,6 +1,9 @@
 import Device from "../model/Device.js";
 import ConversationMember from "../model/ConversationMember.js";
 import DeviceKeyBackup from "../model/DeviceKeyBackup.js";
+import AuthSession from "../model/AuthSession.js";
+import { disconnectSession } from "../lib/socket.js";
+import { closeSessionStreams } from "../services/event.service.js";
 import {
   isPublicP256Key,
   parseEncryptionContext,
@@ -26,6 +29,9 @@ const resolveBundleUserIds = async (context, requesterId) => {
 export const registerDevice = async (req, res) => {
   try {
     const { deviceId } = req.params;
+    if (req.authSession.deviceId && req.authSession.deviceId !== deviceId) {
+      return res.status(409).json({ message: "Session is already bound to another device" });
+    }
     const {
       name,
       identitySigningKey,
@@ -60,11 +66,28 @@ export const registerDevice = async (req, res) => {
     if (!device) {
       device = new Device({ userId: req.user._id, deviceId, identitySigningKey });
     }
+    const previousAuthSessionId = device.authSessionId?.toString();
     device.name = String(name || "Browser").slice(0, 120);
     device.encryptionPublicKey = encryptionPublicKey;
     device.encryptionKeySignature = encryptionKeySignature;
+    device.authSessionId = req.authSession._id;
     device.lastSeenAt = new Date();
     await device.save();
+    req.authSession.deviceId = deviceId;
+    req.authSession.lastSeenAt = new Date();
+    await req.authSession.save();
+
+    if (previousAuthSessionId && previousAuthSessionId !== req.authSession._id.toString()) {
+      const previousSession = await AuthSession.findOneAndUpdate(
+        { _id: previousAuthSessionId, revokedAt: null },
+        { revokedAt: new Date() },
+        { new: true }
+      );
+      if (previousSession) {
+        disconnectSession(previousSession.sessionId, "replaced");
+        closeSessionStreams(previousSession.sessionId, "replaced");
+      }
+    }
     return res.status(200).json({
       deviceId: device.deviceId,
       name: device.name,
@@ -96,7 +119,20 @@ export const revokeDevice = async (req, res) => {
       { new: true }
     );
     if (!device) return res.status(404).json({ message: "Device not found" });
-    return res.status(200).json({ message: "Device revoked" });
+    let revokedSession = null;
+    if (device.authSessionId) {
+      revokedSession = await AuthSession.findOneAndUpdate(
+        { _id: device.authSessionId, revokedAt: null },
+        { revokedAt: new Date() },
+        { new: true }
+      );
+    }
+    res.status(200).json({ message: "Device and session revoked" });
+    if (revokedSession) {
+      disconnectSession(revokedSession.sessionId, "device-revoked");
+      closeSessionStreams(revokedSession.sessionId, "device-revoked");
+    }
+    return undefined;
   } catch (error) {
     console.error("Revoke device error:", error);
     return res.status(500).json({ message: "Server error" });
