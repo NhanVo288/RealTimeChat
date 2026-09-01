@@ -393,10 +393,15 @@ export const useChatStore = create((set, get) => ({
   editMessage: async (messageId, text) => {
     try {
       const existingMessage = get().messages.find((message) => message._id === messageId);
+      if (!existingMessage) throw new Error("Message not found");
       const encryptedPayload = await encryptMessage(
         { text, image: existingMessage?.image || null },
         getRecipientUserIds(get().selectedUser),
-        getEncryptionContext(get().selectedUser)
+        getEncryptionContext(get().selectedUser),
+        {
+          messageId: existingMessage.clientMessageId || existingMessage._id,
+          revision: Number(existingMessage.encryptionRevision || 0) + 1,
+        }
       );
       const res = await axiosInstance.patch(`/messages/${messageId}`, {
         encryptedPayload,
@@ -549,7 +554,8 @@ export const useChatStore = create((set, get) => ({
     const { authUser } = useAuthStore.getState();
 
     // Tạo optimistic message
-    const tempId = `temp-${Date.now()}`;
+    const clientMessageId = crypto.randomUUID();
+    const tempId = `temp-${clientMessageId}`;
     const optimisticMessage = {
       _id: tempId,
       senderId: authUser._id,
@@ -558,6 +564,8 @@ export const useChatStore = create((set, get) => ({
       text: payload.text || "",
       image: payload.image || null,
       createdAt: new Date().toISOString(),
+      clientMessageId,
+      encryptionRevision: 0,
       isOptimistic: true,
     };
 
@@ -591,7 +599,8 @@ export const useChatStore = create((set, get) => ({
       const encryptedPayload = await encryptMessage(
         { text: payload.text || "", image: payload.image || null },
         getRecipientUserIds(selectedUser),
-        getEncryptionContext(selectedUser)
+        getEncryptionContext(selectedUser),
+        { messageId: clientMessageId, revision: 0 }
       );
       body = { encryptedPayload };
 

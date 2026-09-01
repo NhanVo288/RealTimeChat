@@ -8,7 +8,8 @@
   },
   "scripts": {
     "build": "npm install --prefix backend && npm install --prefix frontend --production=false && npm run build --prefix frontend",
-    "start": "npm run start --prefix backend"
+    "start": "npm run start --prefix backend",
+    "test": "npm run test --prefix backend && npm run test --prefix frontend"
   },
   "repository": {
     "type": "git",

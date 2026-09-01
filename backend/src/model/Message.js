@@ -43,6 +43,18 @@ const messageSchema = new mongoose.Schema(
       default: null,
     },
 
+    clientMessageId: {
+      type: String,
+      default: null,
+      maxlength: 100,
+    },
+
+    encryptionRevision: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
     attachments: [
       {
         url: String,
@@ -72,6 +84,13 @@ const messageSchema = new mongoose.Schema(
 );
 
 messageSchema.index({ conversationId: 1, _id: -1 });
+messageSchema.index(
+  { senderId: 1, clientMessageId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { clientMessageId: { $type: "string" } },
+  }
+);
 
 const Message = mongoose.model("Message", messageSchema);
 

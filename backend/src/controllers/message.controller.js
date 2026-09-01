@@ -58,7 +58,9 @@ export const sendMessage = async (req, res) => {
       return res.status(404).json({ message: "Recipient not found" });
     }
     const conversation = await getOrCreateDirectConversation(senderId, receiverId);
-    if (!(await validateEncryptedPayload(encryptedPayload, senderId, conversation._id))) {
+    if (!(await validateEncryptedPayload(encryptedPayload, senderId, conversation._id, {
+      expectedRevision: 0,
+    }))) {
       return res.status(400).json({ message: "A valid E2EE payload is required" });
     }
     const message = await createMessage({
@@ -78,6 +80,9 @@ export const sendMessage = async (req, res) => {
     return res.status(201).json(clientMessage);
   } catch (error) {
     console.error("Send message error:", error);
+    if (error?.code === 11000) {
+      return res.status(409).json({ message: "Duplicate encrypted message" });
+    }
     return res.status(500).json({ message: "Server error" });
   }
 };
@@ -115,18 +120,36 @@ export const editMessage = async (req, res) => {
       userId: req.user._id,
     });
     if (!isMember) return res.status(403).json({ message: "Not a conversation member" });
+    const currentRevision = existingMessage.encryptionRevision || 0;
+    const stableMessageId = existingMessage.clientMessageId || existingMessage._id.toString();
     if (!(await validateEncryptedPayload(
       encryptedPayload,
       req.user._id,
-      existingMessage.conversationId
+      existingMessage.conversationId,
+      { expectedMessageId: stableMessageId, expectedRevision: currentRevision + 1 }
     ))) return res.status(400).json({ message: "A valid E2EE payload is required" });
 
+    const revisionFilter = currentRevision === 0
+      ? { $or: [{ encryptionRevision: 0 }, { encryptionRevision: { $exists: false } }] }
+      : { encryptionRevision: currentRevision };
     const message = await Message.findOneAndUpdate(
-      { _id: req.params.id, senderId: req.user._id, deletedAt: null },
-      { text: "", isEncrypted: true, encryptedPayload, editedAt: new Date() },
+      {
+        _id: req.params.id,
+        senderId: req.user._id,
+        deletedAt: null,
+        ...revisionFilter,
+      },
+      {
+        text: "",
+        isEncrypted: true,
+        encryptedPayload,
+        clientMessageId: encryptedPayload.messageId,
+        encryptionRevision: encryptedPayload.revision,
+        editedAt: new Date(),
+      },
       { new: true }
     ).populate("senderId", "fullName profilePic");
-    if (!message) return res.status(404).json({ message: "Message not found" });
+    if (!message) return res.status(409).json({ message: "Message was updated by another request" });
 
     const payload = toClientMessage(message);
     const memberIds = await ConversationMember.find({

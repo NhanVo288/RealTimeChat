@@ -7,13 +7,17 @@ import { initializeE2EE, resetE2EESession } from "../../../shared/lib/crypto";
 
 const BASE_URL = import.meta.env.VITE_BACKEND_URL ||
   (import.meta.env.MODE === "development" ? "http://localhost:3000" : "/");
-const activateE2EE = async (userId, set) => {
+const activateE2EE = async (userId, set, get) => {
   try {
     await initializeE2EE(userId);
-    set({ isE2EEReady: true, e2eeError: null });
+    if (get().authUser?._id === userId) {
+      set({ isE2EEReady: true, e2eeError: null });
+    }
   } catch (error) {
     console.error("E2EE initialization error:", error);
-    set({ isE2EEReady: false, e2eeError: error.message });
+    if (get().authUser?._id === userId) {
+      set({ isE2EEReady: false, e2eeError: error.message });
+    }
   }
 };
 
@@ -31,7 +35,7 @@ export const useAuthStore = create((set,get) => ({
     try {
       const res = await axiosInstance.get("/auth/check");
       set({ authUser: res.data });
-      await activateE2EE(res.data._id, set);
+      await activateE2EE(res.data._id, set, get);
     } catch (error) {
       console.log(error);
       set({ authUser: null, isE2EEReady: false, e2eeError: null });
@@ -44,7 +48,7 @@ export const useAuthStore = create((set,get) => ({
     try {
       const res = await axiosInstance.post("/auth/signup", data);
       set({ authUser: res.data });
-      await activateE2EE(res.data._id, set);
+      await activateE2EE(res.data._id, set, get);
       toast.success("Tao tai khoan thanh cong");
       get().connectSocket()
     } catch (error) {
@@ -58,7 +62,7 @@ export const useAuthStore = create((set,get) => ({
     try {
       const res = await axiosInstance.post("/auth/login", data);
       set({ authUser: res.data });
-      await activateE2EE(res.data._id, set);
+      await activateE2EE(res.data._id, set, get);
       toast.success("Dang nhap thanh cong");
 
       get().connectSocket()

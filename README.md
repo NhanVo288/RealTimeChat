@@ -62,12 +62,11 @@ RealTimeChat là ứng dụng chat thời gian thực full-stack sử dụng Rea
 ### E2EE nhiều thiết bị
 
 - Identity signing key riêng cho từng browser/device.
-- Signed prekey và one-time prekey riêng cho từng device.
+- Một static encryption key ECDH riêng cho từng device, được identity key ký xác nhận.
 - Mỗi message có một AES-256-GCM key ngẫu nhiên.
 - Mỗi device nhận một envelope ECDH/HKDF riêng chứa message key.
 - Payload được ký ECDSA để xác thực device gửi và chống chỉnh sửa.
 - TOFU pinning phát hiện identity key của device gửi bị thay đổi.
-- One-time prekey, signed-prekey rotation và background refill.
 - Private key chỉ tồn tại trong IndexedDB của trình duyệt, không được gửi lên backend.
 
 ## Công nghệ
@@ -99,7 +98,7 @@ React UI
 Backend chỉ nhận và lưu `encryptedPayload` của tin nhắn mới. Trình tự gửi message là:
 
 1. Frontend tạo optimistic message để hiển thị ngay.
-2. Frontend claim prekey bundle của tất cả device đang hoạt động thuộc các thành viên.
+2. Frontend lấy public key bundle của tất cả device E2EE đang hoạt động thuộc các thành viên.
 3. Frontend mã hóa nội dung và tạo envelope riêng cho từng device.
 4. Backend xác thực cấu trúc payload, sender device, conversation context và độ phủ envelope.
 5. Backend lưu message vào MongoDB.
@@ -273,11 +272,11 @@ Tất cả route `/api/messages/*` đều đi qua Arcjet và JWT authentication.
 | Method | Endpoint | Body chính | Mô tả |
 | --- | --- | --- | --- |
 | `GET` | `/api/auth/devices` | — | Liệt kê device chưa revoke của user |
-| `PUT` | `/api/auth/devices/:deviceId` | Public identity key, signed prekey, one-time prekeys | Đăng ký/cập nhật public key bundle |
-| `DELETE` | `/api/auth/devices/:deviceId` | — | Revoke device và xóa one-time prekey còn lại trên server |
-| `POST` | `/api/auth/keys/claim` | `{ userIds: [...] }` | Claim một prekey cho từng device của các user nhận |
+| `PUT` | `/api/auth/devices/:deviceId` | Public identity key, public encryption key và chữ ký | Đăng ký/cập nhật public key bundle |
+| `DELETE` | `/api/auth/devices/:deviceId` | — | Revoke device |
+| `POST` | `/api/auth/keys/bundles` | `{ context }` | Server suy ra thành viên từ context và trả public key của các device |
 
-`deviceId` tối đa 100 ký tự. Identity key đã đăng ký không được thay thế trên cùng một device. Một request claim nhận tối đa 100 user ID; server atomically lấy một one-time prekey khỏi device và fallback sang signed prekey nếu kho đã hết.
+`deviceId` tối đa 100 ký tự. Identity key và encryption key đã đăng ký không được thay thế trên cùng một device. Endpoint bundle không tiêu thụ key và chỉ trả device thuộc direct chat hoặc group mà requester là thành viên.
 
 ### Direct chat
 
@@ -428,19 +427,21 @@ Payload chính có dạng khái quát:
 
 ```json
 {
-  "version": 1,
+  "version": 3,
   "algorithm": "ECDH-P256/HKDF-SHA256/AES-256-GCM",
+  "senderUserId": "...",
   "senderDeviceId": "uuid",
   "senderSigningKey": { "kty": "EC", "crv": "P-256", "x": "...", "y": "..." },
   "context": "conversation:<id> hoặc direct:<sorted-user-ids>",
+  "messageId": "client-generated UUID",
+  "revision": 0,
+  "contentType": "text hoặc image",
   "iv": "base64",
   "ciphertext": "base64",
   "envelopes": [
     {
       "userId": "...",
       "deviceId": "...",
-      "keyId": "...",
-      "keyType": "one-time",
       "ephemeralPublicKey": { "kty": "EC", "crv": "P-256", "x": "...", "y": "..." },
       "iv": "base64",
       "ciphertext": "base64"
@@ -458,49 +459,47 @@ Sau signup, login hoặc khôi phục phiên:
 
 1. `initializeE2EE(userId)` kiểm tra secure context, Web Crypto và IndexedDB.
 2. Client đọc device của user từ database IndexedDB `realtime-chat-e2ee-v1`, object store `keys`.
-3. Nếu chưa có, client tạo UUID `deviceId`, identity key ECDSA P-256, signed prekey ECDH P-256 và 30 one-time prekey ECDH P-256.
-4. Mỗi prekey được ký bởi identity private key.
-5. Client upload public key, signature và metadata lên backend.
+3. Nếu chưa có, client tạo UUID `deviceId`, identity key ECDSA P-256 và static encryption key ECDH P-256.
+4. Identity private key ký canonical data gồm `deviceId` và public encryption key.
+5. Client upload hai public key, chữ ký và metadata lên backend. Backend xác minh chữ ký trước khi lưu.
+
+Device local từ protocol v1/v2 được tự động bổ sung static encryption key khi đăng nhập. Các private prekey cũ chỉ còn được giữ local để giải mã lịch sử v1/v2.
 
 Private key được import lại thành `CryptoKey` với `extractable=false` trước khi lưu. Kết nối IndexedDB được cache và dùng lại thay vì mở/đóng database cho từng thao tác.
 
 ### Mã hóa khi gửi
 
 1. Tạo context: group dùng `conversation:<conversationId>`; direct dùng `direct:<hai-user-id-được-sort>`.
-2. Claim bundle cho mọi device đang hoạt động của tất cả member, bao gồm device của sender.
-3. Xác minh chữ ký ECDSA của từng prekey.
+2. Gửi `context` lên endpoint bundle; backend tự xác định member hợp lệ và trả public identity/encryption key của mọi device v3 đang hoạt động, bao gồm device của sender.
+3. Xác minh chữ ký ECDSA của encryption key và TOFU-pin identity của từng device nhận.
 4. Tạo message key AES-256-GCM ngẫu nhiên.
 5. Với mỗi device, chạy song song bằng `Promise.all`: tạo ephemeral ECDH key, derive secret, derive wrapping key HKDF và bọc message key.
-6. Mã hóa `{ text, image }` bằng message key. AAD là `<senderDeviceId>:<context>`.
-7. Canonicalize các trường payload và ký bằng identity ECDSA/SHA-256.
+6. Mã hóa `{ text, image }` bằng message key. AAD canonicalize version/algorithm/sender/context/message ID/revision/content type.
+7. Canonicalize toàn bộ payload, bao gồm metadata trên và các envelope, rồi ký bằng identity ECDSA/SHA-256.
 
-HKDF dùng salt `realtime-chat:<deviceId>` và info `message-key:<keyId>`.
+HKDF v3 dùng salt `realtime-chat:v3:<deviceId>` và info `message-key:<context>:<messageId>:<revision>`.
 
-Backend không giải mã nhưng kiểm tra version/algorithm, sender device, identity key, context, active devices, độ phủ envelope, public JWK và giới hạn kích thước payload.
+Backend không giải mã nhưng kiểm tra version/algorithm, chữ ký payload, sender identity, context, revision, active devices, độ phủ envelope, public JWK và giới hạn kích thước payload.
 
 ### Giải mã khi nhận
 
 1. Xác minh chữ ký toàn payload bằng sender signing key.
 2. Pin fingerprint `<x>.<y>` theo `senderDeviceId` bằng TOFU.
 3. Tìm envelope có `deviceId` của device hiện tại.
-4. Tìm private one-time/signed prekey tương ứng trong IndexedDB.
-5. Derive wrapping key bằng ECDH + HKDF và mở message key.
-6. Cache raw message key theo `message-key:<userId>:<messageId>` để đọc lại message.
+4. Lấy static ECDH private key của device hiện tại trong IndexedDB.
+5. Kết hợp private key này với ephemeral public key trong envelope, derive wrapping key bằng ECDH + HKDF và mở message key.
+6. Cache `CryptoKey` non-extractable cùng chữ ký payload theo `message-key:<userId>:<messageId>`. Khi edit tạo signature/revision mới, cache cũ bị thay và message key mới được unwrap.
 7. Dùng message key, IV và AAD để giải mã nội dung.
-8. Nếu dùng one-time prekey, xóa private prekey đó khỏi local và xếp lịch refill background.
 
-Nếu signature sai, identity key thay đổi, thiếu envelope hoặc không còn private prekey, client hiển thị lỗi không thể giải mã/xác thực thay cho plaintext.
+Nếu signature sai, identity key thay đổi, thiếu envelope hoặc không còn private encryption key, client hiển thị lỗi không thể giải mã/xác thực thay cho plaintext.
 
-### Rotation, refill và forward secrecy
+### Tương thích và đánh đổi bảo mật
 
-- Signed prekey rotate sau 7 ngày.
-- Client giữ tối đa 4 signed prekey gần nhất để mở message đang tham chiếu key cũ.
-- Mục tiêu là 30 one-time prekey; khi còn dưới 10, client tạo đủ để quay lại 30.
-- Nếu server fallback sang signed prekey, client emergency refill thêm 20 key, tối đa một lần mỗi giờ trên device.
-- Việc tạo prekey và envelope dùng `Promise.all`.
-- Rotation/refill chạy trong background queue bằng timer 0 ms, không chặn đường hiển thị message realtime.
-
-One-time ECDH prekey giúp giảm ảnh hưởng nếu identity/signed private key bị lộ về sau. Tuy nhiên đây không phải Signal Double Ratchet: chưa có ratchet theo từng message chain và chưa cung cấp post-compromise security đầy đủ.
+- Backend chỉ nhận message mới/edit ở protocol v3; frontend vẫn có nhánh giải mã message v1/v2 đã lưu nếu private prekey cũ còn trong IndexedDB.
+- Bỏ prekey làm protocol, API và lifecycle đơn giản hơn: không claim, quota, rotate, refill hay fallback.
+- v3 **không có forward secrecy**: nếu static ECDH private key của device bị lộ, kẻ tấn công có ciphertext đã ghi lại có thể mở các message v3 trước đó gửi cho device đó.
+- Chưa có Double Ratchet nên cũng chưa có post-compromise security.
+- Sau khi deploy v3, mỗi browser/device cũ cần đăng nhập ít nhất một lần để tạo và đăng ký static encryption key; trước đó device đó không nhận envelope v3 mới.
 
 ## Mô hình dữ liệu
 
@@ -515,7 +514,7 @@ One-time ECDH prekey giúp giảm ảnh hưởng nếu identity/signed private k
 ### `Device`
 
 - Unique compound index `{ userId, deviceId }`.
-- Public identity signing key, signed prekey và danh sách public one-time prekey.
+- Public identity signing key, public static encryption key và chữ ký của encryption key.
 - `lastSeenAt`, `revokedAt` và timestamps.
 - Backend không lưu private device key.
 
@@ -552,7 +551,7 @@ E2EE che nội dung `text` và `image`, nhưng backend vẫn thấy user/device/
 
 - Device mới chỉ giải mã message được gửi sau khi device đó đăng ký và được đưa vào envelope.
 - Chưa có cơ chế chuyển lịch sử hoặc private key an toàn giữa device.
-- Xóa IndexedDB/browser profile làm mất private prekey và cached message key trên device đó.
+- Xóa IndexedDB/browser profile làm mất private device key và cached message key trên device đó.
 - Revoke device ngăn nhận envelope mới nhưng không xóa dữ liệu private đã tồn tại trên device bị revoke.
 - TOFU chưa có safety number/QR/out-of-band verification.
 - Thu hồi message không thể xóa plaintext người nhận đã xem, chụp hoặc lưu trước đó.
@@ -567,7 +566,7 @@ E2EE che nội dung `text` và `image`, nhưng backend vẫn thấy user/device/
 
 ### Hạn chế hiện tại
 
-- Chưa có automated test suite.
+- Test hiện bao phủ canonical signature, identity/message/revision binding, key signature, payload shape và cache invalidation; chưa có browser E2E test chạy qua nhiều tab/device thật.
 - Chưa có delivery/read receipt theo từng message cho phía sender; read cursor hiện phục vụ unread của chính user.
 - Chưa có typing indicator, reply UI, file attachment tổng quát, mute/pin UI hoặc push notification.
 - SSE client state và Socket user map nằm trong memory của một Node process. Khi scale ngang cần shared pub/sub và Socket.IO adapter như Redis.
@@ -610,6 +609,7 @@ Trước khi deploy:
 ## Kiểm tra source
 
 ```powershell
+npm test
 npm run lint --prefix frontend
 npm run build --prefix frontend
 ```

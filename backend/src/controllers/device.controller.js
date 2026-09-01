@@ -1,24 +1,47 @@
-import mongoose from "mongoose";
 import Device from "../model/Device.js";
+import ConversationMember from "../model/ConversationMember.js";
+import {
+  isPublicP256Key,
+  parseEncryptionContext,
+  isBase64WithByteLength,
+  verifyDeviceEncryptionKeySignature,
+} from "../lib/e2ee.js";
 
-const isPublicP256Key = (key) => key && key.kty === "EC" && key.crv === "P-256" &&
-  typeof key.x === "string" && key.x.length <= 100 &&
-  typeof key.y === "string" && key.y.length <= 100 && !key.d;
-
-const validPreKey = (key) => key && typeof key.keyId === "string" &&
-  key.keyId.length <= 100 && isPublicP256Key(key.publicKey) &&
-  typeof key.signature === "string" && key.signature.length <= 300;
+const resolveBundleUserIds = async (context, requesterId) => {
+  const parsed = parseEncryptionContext(context, requesterId);
+  if (!parsed) return null;
+  if (parsed.type === "direct") return parsed.userIds;
+  const isMember = await ConversationMember.exists({
+    conversationId: parsed.conversationId,
+    userId: requesterId,
+  });
+  if (!isMember) return null;
+  const userIds = (await ConversationMember.find({ conversationId: parsed.conversationId })
+    .distinct("userId")).map(String);
+  return userIds.length <= 100 ? userIds : null;
+};
 
 export const registerDevice = async (req, res) => {
   try {
     const { deviceId } = req.params;
-    const { name, identitySigningKey, signedPreKey, oneTimePreKeys = [] } = req.body;
+    const {
+      name,
+      identitySigningKey,
+      encryptionPublicKey,
+      encryptionKeySignature,
+    } = req.body;
     if (!deviceId || deviceId.length > 100 || !isPublicP256Key(identitySigningKey) ||
-      !validPreKey(signedPreKey) || typeof signedPreKey.signature !== "string" ||
-      !Number.isFinite(Date.parse(signedPreKey.createdAt)) ||
-      !Array.isArray(oneTimePreKeys) || oneTimePreKeys.length > 100 ||
-      !oneTimePreKeys.every(validPreKey)) {
+      !isPublicP256Key(encryptionPublicKey) ||
+      !isBase64WithByteLength(encryptionKeySignature, 64)) {
       return res.status(400).json({ message: "Invalid device key bundle" });
+    }
+    if (!(await verifyDeviceEncryptionKeySignature(
+      identitySigningKey,
+      deviceId,
+      encryptionPublicKey,
+      encryptionKeySignature
+    ))) {
+      return res.status(400).json({ message: "Invalid device encryption-key signature" });
     }
 
     let device = await Device.findOne({ userId: req.user._id, deviceId });
@@ -27,13 +50,17 @@ export const registerDevice = async (req, res) => {
       device.identitySigningKey.y !== identitySigningKey.y)) {
       return res.status(409).json({ message: "Device identity key cannot be replaced" });
     }
+    if (device?.encryptionPublicKey &&
+      (device.encryptionPublicKey.x !== encryptionPublicKey.x ||
+        device.encryptionPublicKey.y !== encryptionPublicKey.y)) {
+      return res.status(409).json({ message: "Device encryption key cannot be replaced" });
+    }
     if (!device) {
       device = new Device({ userId: req.user._id, deviceId, identitySigningKey });
     }
     device.name = String(name || "Browser").slice(0, 120);
-    device.signedPreKey = { ...signedPreKey, createdAt: new Date(signedPreKey.createdAt) };
-    const knownKeyIds = new Set(device.oneTimePreKeys.map((key) => key.keyId));
-    device.oneTimePreKeys.push(...oneTimePreKeys.filter((key) => !knownKeyIds.has(key.keyId)));
+    device.encryptionPublicKey = encryptionPublicKey;
+    device.encryptionKeySignature = encryptionKeySignature;
     device.lastSeenAt = new Date();
     await device.save();
     return res.status(200).json({
@@ -63,7 +90,7 @@ export const revokeDevice = async (req, res) => {
   try {
     const device = await Device.findOneAndUpdate(
       { userId: req.user._id, deviceId: req.params.deviceId, revokedAt: null },
-      { revokedAt: new Date(), oneTimePreKeys: [] },
+      { revokedAt: new Date() },
       { new: true }
     );
     if (!device) return res.status(404).json({ message: "Device not found" });
@@ -74,43 +101,28 @@ export const revokeDevice = async (req, res) => {
   }
 };
 
-export const claimKeyBundles = async (req, res) => {
+export const getKeyBundles = async (req, res) => {
   try {
-    const userIds = [...new Set((req.body.userIds || []).map(String))];
-    if (!userIds.length || userIds.length > 100 ||
-      userIds.some((id) => !mongoose.isValidObjectId(id))) {
-      return res.status(400).json({ message: "Invalid recipients" });
-    }
+    const { context } = req.body;
+    const userIds = await resolveBundleUserIds(context, req.user._id);
+    if (!userIds?.length) return res.status(400).json({ message: "Invalid E2EE context" });
 
-    const devices = await Device.find({ userId: { $in: userIds }, revokedAt: null });
-    const bundles = [];
-    for (const device of devices) {
-      const claimedDevice = await Device.findOneAndUpdate(
-        { _id: device._id, "oneTimePreKeys.0": { $exists: true } },
-        { $pop: { oneTimePreKeys: -1 } },
-        { new: false }
-      );
-      let preKey = claimedDevice?.oneTimePreKeys?.[0];
-      let preKeyType = preKey ? "one-time" : "signed";
-      if (!preKey) {
-        preKey = device.signedPreKey;
-      }
-      bundles.push({
-        userId: device.userId.toString(),
-        deviceId: device.deviceId,
-        identitySigningKey: device.identitySigningKey,
-        signedPreKey: device.signedPreKey,
-        preKey: {
-          keyId: preKey.keyId,
-          publicKey: preKey.publicKey,
-          signature: preKey.signature,
-          type: preKeyType,
-        },
-      });
-    }
-    return res.status(200).json({ bundles });
+    const devices = await Device.find({
+      userId: { $in: userIds },
+      revokedAt: null,
+      encryptionPublicKey: { $ne: null },
+      encryptionKeySignature: { $ne: null },
+    }).lean();
+    const bundles = devices.map((device) => ({
+      userId: device.userId.toString(),
+      deviceId: device.deviceId,
+      identitySigningKey: device.identitySigningKey,
+      encryptionPublicKey: device.encryptionPublicKey,
+      encryptionKeySignature: device.encryptionKeySignature,
+    }));
+    return res.status(200).json({ context, bundles });
   } catch (error) {
-    console.error("Claim key bundles error:", error);
+    console.error("Get key bundles error:", error);
     return res.status(500).json({ message: "Server error" });
   }
 };

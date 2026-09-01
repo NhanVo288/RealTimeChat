@@ -1,20 +1,25 @@
 import { axiosInstance } from "./axios";
+import {
+  E2EE_ALGORITHM,
+  E2EE_VERSION,
+  authenticatedMessageMetadata,
+  canonicalize,
+  deviceEncryptionKeyData,
+  isCurrentMessageKeyCache,
+  messageKeyCacheKey,
+  peerIdentityPinKey,
+  unsignedPayload,
+} from "./crypto-core";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const algorithm = "ECDH-P256/HKDF-SHA256/AES-256-GCM";
 const dbName = "realtime-chat-e2ee-v1";
 const storeName = "keys";
-const signedPreKeyLifetime = 7 * 24 * 60 * 60 * 1000;
-const preKeyTarget = 30;
 let currentUserId = null;
 let devicePromise = null;
 let databasePromise = null;
-let maintenanceTimer = null;
-let maintenancePromise = null;
-let pendingMaintenanceDevice = null;
-let maintenanceRequested = false;
-let emergencyMaintenanceRequested = false;
+let sessionVersion = 0;
+let sessionController = null;
 
 const bytesToBase64 = (bytes) => {
   let value = "";
@@ -28,15 +33,6 @@ const bytesToBase64 = (bytes) => {
 const base64ToBytes = (value) => Uint8Array.from(
   atob(value), (character) => character.charCodeAt(0)
 );
-
-const canonicalize = (value) => {
-  if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) =>
-      `${JSON.stringify(key)}:${canonicalize(value[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-};
 
 const openDatabase = () => {
   if (!databasePromise) {
@@ -75,6 +71,13 @@ const databaseOperation = async (mode, operation) => {
 
 const readKey = (key) => databaseOperation("readonly", (store) => store.get(key));
 const writeKey = (key, value) => databaseOperation("readwrite", (store) => store.put(value, key));
+const deleteKey = (key) => databaseOperation("readwrite", (store) => store.delete(key));
+
+const assertActiveSession = (device, version) => {
+  if (version !== sessionVersion || String(device.userId) !== String(currentUserId)) {
+    throw new DOMException("E2EE session changed", "AbortError");
+  }
+};
 
 const generateKeyPair = async (name, usages) => {
   const generated = await crypto.subtle.generateKey({ name, namedCurve: "P-256" }, true, usages);
@@ -89,150 +92,80 @@ const generateKeyPair = async (name, usages) => {
   return { publicKey, privateKey };
 };
 
-const preKeyData = (preKey) => encoder.encode(canonicalize({
-  keyId: preKey.keyId,
-  publicKey: preKey.publicKey,
-}));
-
-const createPreKey = async (identityPrivateKey) => {
-  const pair = await generateKeyPair("ECDH", ["deriveBits"]);
-  const preKey = {
-    keyId: crypto.randomUUID(),
-    publicKey: pair.publicKey,
-    privateKey: pair.privateKey,
-    createdAt: new Date().toISOString(),
-    published: false,
-  };
-  preKey.signature = bytesToBase64(await crypto.subtle.sign(
-    { name: "ECDSA", hash: "SHA-256" }, identityPrivateKey, preKeyData(preKey)
+const signDeviceEncryptionKey = async (deviceId, publicKey, identityPrivateKey) =>
+  bytesToBase64(await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    identityPrivateKey,
+    encoder.encode(deviceEncryptionKeyData(deviceId, publicKey))
   ));
-  return preKey;
-};
-
-const publicPreKey = ({ keyId, publicKey, signature, createdAt }) => ({
-  keyId, publicKey, signature, ...(createdAt ? { createdAt } : {}),
-});
 
 const createDevice = async (userId) => {
-  const identity = await generateKeyPair("ECDSA", ["sign", "verify"]);
-  const [signedPreKey, oneTimePreKeys] = await Promise.all([
-    createPreKey(identity.privateKey),
-    Promise.all(Array.from(
-      { length: preKeyTarget },
-      () => createPreKey(identity.privateKey)
-    )),
+  const [identity, encryption] = await Promise.all([
+    generateKeyPair("ECDSA", ["sign", "verify"]),
+    generateKeyPair("ECDH", ["deriveBits"]),
   ]);
-  return {
-    userId,
-    deviceId: crypto.randomUUID(),
-    identity,
-    signedPreKeys: [signedPreKey],
-    oneTimePreKeys,
-  };
+  const deviceId = crypto.randomUUID();
+  encryption.signature = await signDeviceEncryptionKey(
+    deviceId,
+    encryption.publicKey,
+    identity.privateKey
+  );
+  return { userId, deviceId, identity, encryption };
 };
 
-const registerDevice = async (device) => {
-  const activeSignedPreKey = device.signedPreKeys.at(-1);
-  const unpublished = device.oneTimePreKeys.filter((key) => !key.published);
+const migrateDevice = async (device) => {
+  if (!device.encryption?.privateKey || !device.encryption?.publicKey) {
+    device.encryption = await generateKeyPair("ECDH", ["deriveBits"]);
+  }
+  if (!device.encryption.signature) {
+    device.encryption.signature = await signDeviceEncryptionKey(
+      device.deviceId,
+      device.encryption.publicKey,
+      device.identity.privateKey
+    );
+  }
+};
+
+const registerDevice = async (device, version) => {
+  assertActiveSession(device, version);
   await axiosInstance.put(`/auth/devices/${device.deviceId}`, {
     name: navigator.userAgent.slice(0, 120),
     identitySigningKey: device.identity.publicKey,
-    signedPreKey: publicPreKey(activeSignedPreKey),
-    oneTimePreKeys: unpublished.map(publicPreKey),
-  });
-  unpublished.forEach((key) => { key.published = true; });
-  activeSignedPreKey.published = true;
+    encryptionPublicKey: device.encryption.publicKey,
+    encryptionKeySignature: device.encryption.signature,
+  }, { signal: sessionController?.signal });
+  assertActiveSession(device, version);
   await writeKey(`device:${device.userId}`, device);
   return device;
-};
-
-const maintainPreKeys = async (device, force = false) => {
-  const currentSigned = device.signedPreKeys.at(-1);
-  const shouldRotate = Date.now() - new Date(currentSigned.createdAt).getTime() > signedPreKeyLifetime;
-  const refillCount = device.oneTimePreKeys.length < 10
-    ? preKeyTarget - device.oneTimePreKeys.length
-    : 0;
-  const [rotatedPreKey, freshPreKeys] = await Promise.all([
-    shouldRotate ? createPreKey(device.identity.privateKey) : null,
-    Promise.all(Array.from(
-      { length: refillCount },
-      () => createPreKey(device.identity.privateKey)
-    )),
-  ]);
-  if (rotatedPreKey) {
-    device.signedPreKeys.push(rotatedPreKey);
-    device.signedPreKeys = device.signedPreKeys.slice(-4);
-  }
-  device.oneTimePreKeys.push(...freshPreKeys);
-  return rotatedPreKey || freshPreKeys.length || force ? registerDevice(device) : device;
-};
-
-const emergencyPreKeyRefill = async (device) => {
-  if (Date.now() - (device.lastEmergencyRefill || 0) < 60 * 60 * 1000) return;
-  const freshPreKeys = await Promise.all(Array.from(
-    { length: 20 },
-    () => createPreKey(device.identity.privateKey)
-  ));
-  device.oneTimePreKeys.push(...freshPreKeys);
-  device.lastEmergencyRefill = Date.now();
-  await registerDevice(device);
-};
-
-const scheduleKeyMaintenance = (device, emergency = false) => {
-  pendingMaintenanceDevice = device;
-  maintenanceRequested = true;
-  emergencyMaintenanceRequested ||= emergency;
-  if (maintenanceTimer || maintenancePromise) return;
-
-  maintenanceTimer = setTimeout(() => {
-    maintenanceTimer = null;
-    const targetDevice = pendingMaintenanceDevice;
-    const runEmergencyRefill = emergencyMaintenanceRequested;
-    maintenanceRequested = false;
-    emergencyMaintenanceRequested = false;
-    maintenancePromise = (async () => {
-      if (runEmergencyRefill) await emergencyPreKeyRefill(targetDevice);
-      await maintainPreKeys(targetDevice);
-    })()
-      .catch((error) => console.error("E2EE background key maintenance error:", error))
-      .finally(() => {
-        maintenancePromise = null;
-        if (maintenanceRequested) {
-          scheduleKeyMaintenance(pendingMaintenanceDevice, emergencyMaintenanceRequested);
-        }
-      });
-  }, 0);
 };
 
 export const initializeE2EE = async (userId) => {
   if (!window.isSecureContext || !crypto?.subtle || typeof indexedDB === "undefined") {
     throw new Error("E2EE requires HTTPS (or localhost) and Web Crypto support");
   }
-  if (currentUserId === userId && devicePromise) return devicePromise;
-  currentUserId = userId;
+  const normalizedUserId = String(userId);
+  if (currentUserId === normalizedUserId && devicePromise) return devicePromise;
+
+  sessionController?.abort();
+  sessionVersion += 1;
+  const version = sessionVersion;
+  sessionController = new AbortController();
+  currentUserId = normalizedUserId;
   devicePromise = (async () => {
-    let device = await readKey(`device:${userId}`);
-    if (!device) device = await createDevice(userId);
-    return maintainPreKeys(device, true);
+    let device = await readKey(`device:${normalizedUserId}`);
+    if (!device) device = await createDevice(normalizedUserId);
+    else await migrateDevice(device);
+    assertActiveSession(device, version);
+    await writeKey(`device:${normalizedUserId}`, device);
+    return registerDevice(device, version);
   })().catch((error) => {
-    devicePromise = null;
+    if (version === sessionVersion) devicePromise = null;
     throw error;
   });
   return devicePromise;
 };
 
-const verifyPreKey = async (bundle) => {
-  const identityKey = await crypto.subtle.importKey(
-    "jwk", bundle.identitySigningKey,
-    { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]
-  );
-  return crypto.subtle.verify(
-    { name: "ECDSA", hash: "SHA-256" }, identityKey,
-    base64ToBytes(bundle.preKey.signature), preKeyData(bundle.preKey)
-  );
-};
-
-const deriveWrappingKey = async (privateKey, publicJwk, deviceId, keyId) => {
+const deriveEcdhWrappingKey = async (privateKey, publicJwk, salt, info) => {
   const publicKey = await crypto.subtle.importKey(
     "jwk", publicJwk, { name: "ECDH", namedCurve: "P-256" }, false, []
   );
@@ -241,152 +174,260 @@ const deriveWrappingKey = async (privateKey, publicJwk, deviceId, keyId) => {
   );
   const material = await crypto.subtle.importKey("raw", sharedSecret, "HKDF", false, ["deriveKey"]);
   return crypto.subtle.deriveKey(
-    {
-      name: "HKDF", hash: "SHA-256",
-      salt: encoder.encode(`realtime-chat:${deviceId}`),
-      info: encoder.encode(`message-key:${keyId}`),
-    },
+    { name: "HKDF", hash: "SHA-256", salt: encoder.encode(salt), info: encoder.encode(info) },
     material,
     { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]
   );
 };
 
-const unsignedPayload = (payload) => ({
-  version: payload.version,
-  algorithm: payload.algorithm,
-  senderDeviceId: payload.senderDeviceId,
-  senderSigningKey: payload.senderSigningKey,
-  context: payload.context,
-  iv: payload.iv,
-  ciphertext: payload.ciphertext,
-  envelopes: payload.envelopes,
-});
+const deriveV3WrappingKey = (privateKey, publicJwk, deviceId, payload) =>
+  deriveEcdhWrappingKey(
+    privateKey,
+    publicJwk,
+    `realtime-chat:v3:${deviceId}`,
+    `message-key:${payload.context}:${payload.messageId}:${payload.revision}`
+  );
 
-export const encryptMessage = async (content, recipientUserIds, context) => {
+const deriveLegacyWrappingKey = (privateKey, publicJwk, deviceId, keyId) =>
+  deriveEcdhWrappingKey(
+    privateKey,
+    publicJwk,
+    `realtime-chat:${deviceId}`,
+    `message-key:${keyId}`
+  );
+
+const identityFingerprint = (key) => `${key.x}.${key.y}`;
+
+const verifyAndPinRecipient = async (bundle) => {
+  const identityKey = await crypto.subtle.importKey(
+    "jwk", bundle.identitySigningKey,
+    { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]
+  );
+  const valid = await crypto.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    identityKey,
+    base64ToBytes(bundle.encryptionKeySignature),
+    encoder.encode(deviceEncryptionKeyData(bundle.deviceId, bundle.encryptionPublicKey))
+  );
+  if (!valid) throw new Error("Invalid recipient device encryption-key signature");
+
+  const pinKey = peerIdentityPinKey(currentUserId, bundle.userId, bundle.deviceId);
+  const fingerprint = identityFingerprint(bundle.identitySigningKey);
+  const existing = await readKey(pinKey);
+  if (existing && existing !== fingerprint) throw new Error("Recipient identity key changed");
+  if (!existing) await writeKey(pinKey, fingerprint);
+};
+
+export const encryptMessage = async (content, recipientUserIds, context, options = {}) => {
   if (typeof context !== "string" || !context) throw new Error("Missing E2EE conversation context");
   const device = await initializeE2EE(currentUserId);
-  scheduleKeyMaintenance(device);
   const userIds = [...new Set([...recipientUserIds.map(String), String(currentUserId)])];
-  const { data } = await axiosInstance.post("/auth/keys/claim", { userIds });
+  const { data } = await axiosInstance.post("/auth/keys/bundles", { context });
+  if (data.context !== context) throw new Error("E2EE key-bundle context mismatch");
   const coveredUsers = new Set(data.bundles.map((bundle) => bundle.userId));
-  if (userIds.some((userId) => !coveredUsers.has(userId))) {
+  if (userIds.some((recipientId) => !coveredUsers.has(recipientId))) {
     throw new Error("A recipient has no registered E2EE device");
   }
-  if (data.bundles.some((bundle) =>
-    bundle.deviceId === device.deviceId && bundle.preKey.type === "signed")) {
-    scheduleKeyMaintenance(device, true);
-  }
 
+  const payload = {
+    version: E2EE_VERSION,
+    algorithm: E2EE_ALGORITHM,
+    senderUserId: String(currentUserId),
+    senderDeviceId: device.deviceId,
+    senderSigningKey: device.identity.publicKey,
+    context,
+    messageId: options.messageId || crypto.randomUUID(),
+    revision: options.revision ?? 0,
+    contentType: content.image ? "image" : "text",
+    envelopes: [],
+  };
   const messageKey = await crypto.subtle.generateKey(
     { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]
   );
   const rawMessageKey = await crypto.subtle.exportKey("raw", messageKey);
-  const envelopes = await Promise.all(data.bundles.map(async (bundle) => {
-    if (!(await verifyPreKey(bundle))) throw new Error("Invalid recipient pre-key signature");
+  payload.envelopes = await Promise.all(data.bundles.map(async (bundle) => {
+    await verifyAndPinRecipient(bundle);
     const ephemeral = await generateKeyPair("ECDH", ["deriveBits"]);
-    const wrappingKey = await deriveWrappingKey(
-      ephemeral.privateKey, bundle.preKey.publicKey, bundle.deviceId, bundle.preKey.keyId
+    const wrappingKey = await deriveV3WrappingKey(
+      ephemeral.privateKey,
+      bundle.encryptionPublicKey,
+      bundle.deviceId,
+      payload
     );
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const wrapped = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, wrappingKey, rawMessageKey);
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv }, wrappingKey, rawMessageKey
+    );
     return {
       userId: bundle.userId,
       deviceId: bundle.deviceId,
-      keyId: bundle.preKey.keyId,
-      keyType: bundle.preKey.type,
       ephemeralPublicKey: ephemeral.publicKey,
       iv: bytesToBase64(iv),
-      ciphertext: bytesToBase64(wrapped),
+      ciphertext: bytesToBase64(ciphertext),
     };
   }));
 
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv, additionalData: encoder.encode(`${device.deviceId}:${context}`) },
-    messageKey, encoder.encode(JSON.stringify(content))
+    {
+      name: "AES-GCM",
+      iv,
+      additionalData: encoder.encode(canonicalize(authenticatedMessageMetadata(payload))),
+    },
+    messageKey,
+    encoder.encode(JSON.stringify(content))
   );
-  const payload = {
-    version: 1,
-    algorithm,
-    senderDeviceId: device.deviceId,
-    senderSigningKey: device.identity.publicKey,
-    context,
-    iv: bytesToBase64(iv),
-    ciphertext: bytesToBase64(ciphertext),
-    envelopes,
-  };
+  payload.iv = bytesToBase64(iv);
+  payload.ciphertext = bytesToBase64(ciphertext);
   payload.signature = bytesToBase64(await crypto.subtle.sign(
-    { name: "ECDSA", hash: "SHA-256" }, device.identity.privateKey,
+    { name: "ECDSA", hash: "SHA-256" },
+    device.identity.privateKey,
     encoder.encode(canonicalize(unsignedPayload(payload)))
   ));
   return payload;
 };
 
-const verifyAndPinSender = async (payload) => {
+const verifyAndPinSender = async (payload, message) => {
+  if (![1, 2, E2EE_VERSION].includes(payload.version) || payload.algorithm !== E2EE_ALGORITHM) {
+    throw new Error("Unsupported E2EE payload");
+  }
   const identityKey = await crypto.subtle.importKey(
     "jwk", payload.senderSigningKey,
     { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]
   );
   const valid = await crypto.subtle.verify(
-    { name: "ECDSA", hash: "SHA-256" }, identityKey,
-    base64ToBytes(payload.signature), encoder.encode(canonicalize(unsignedPayload(payload)))
+    { name: "ECDSA", hash: "SHA-256" },
+    identityKey,
+    base64ToBytes(payload.signature),
+    encoder.encode(canonicalize(unsignedPayload(payload)))
   );
   if (!valid) throw new Error("Invalid message signature");
-  const pinKey = `pin:${currentUserId}:${payload.senderDeviceId}`;
-  const fingerprint = `${payload.senderSigningKey.x}.${payload.senderSigningKey.y}`;
+
+  const senderUserId = String(payload.senderUserId || message.senderId);
+  if (payload.version >= 2) {
+    if (senderUserId !== String(message.senderId)) throw new Error("Sender identity mismatch");
+    if (payload.messageId !== message.clientMessageId) throw new Error("Message identity mismatch");
+    if (!Number.isSafeInteger(message.encryptionRevision) ||
+      payload.revision !== message.encryptionRevision) throw new Error("Message revision mismatch");
+    if (payload.context.startsWith("conversation:")) {
+      if (payload.context !== `conversation:${message.conversationId}`) {
+        throw new Error("Conversation context mismatch");
+      }
+    } else if (payload.context.startsWith("direct:")) {
+      const directUsers = payload.context.slice("direct:".length).split(":");
+      if (directUsers.length !== 2 || !directUsers.includes(String(currentUserId)) ||
+        !directUsers.includes(senderUserId)) throw new Error("Direct message context mismatch");
+    } else {
+      throw new Error("Invalid message context");
+    }
+  }
+
+  const pinKey = peerIdentityPinKey(currentUserId, senderUserId, payload.senderDeviceId);
+  const legacyPinKey = `pin:${currentUserId}:${payload.senderDeviceId}`;
+  const fingerprint = identityFingerprint(payload.senderSigningKey);
   const existing = await readKey(pinKey);
-  if (existing && existing !== fingerprint) throw new Error("Sender identity key changed");
+  const legacy = existing ? null : await readKey(legacyPinKey);
+  if ((existing && existing !== fingerprint) || (legacy && legacy !== fingerprint)) {
+    throw new Error("Sender identity key changed");
+  }
   if (!existing) await writeKey(pinKey, fingerprint);
 };
 
+const importAndCacheMessageKey = async (cacheKey, payload, rawKey) => {
+  const key = await crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, ["decrypt"]);
+  await writeKey(cacheKey, { payloadSignature: payload.signature, key, cachedAt: Date.now() });
+  return key;
+};
+
 const unwrapMessageKey = async (message, payload, device) => {
-  const cached = await readKey(`message-key:${currentUserId}:${message._id}`);
-  if (cached) return crypto.subtle.importKey("raw", cached, "AES-GCM", false, ["decrypt"]);
-  const envelope = payload.envelopes.find((item) => item.deviceId === device.deviceId);
-  if (!envelope) throw new Error("Message was not encrypted for this device");
-  const collection = envelope.keyType === "one-time" ? device.oneTimePreKeys : device.signedPreKeys;
-  const preKey = collection.find((item) => item.keyId === envelope.keyId);
-  if (!preKey) throw new Error("Required pre-key is no longer available");
-  const wrappingKey = await deriveWrappingKey(
-    preKey.privateKey, envelope.ephemeralPublicKey, device.deviceId, envelope.keyId
+  const cacheKey = messageKeyCacheKey(currentUserId, message._id);
+  const cached = await readKey(cacheKey);
+  if (isCurrentMessageKeyCache(cached, payload)) return cached.key;
+  if (cached instanceof Uint8Array && payload.version === 1) {
+    return importAndCacheMessageKey(cacheKey, payload, cached);
+  }
+  if (cached) await deleteKey(cacheKey);
+
+  const envelope = payload.envelopes.find((item) =>
+    item.deviceId === device.deviceId && String(item.userId) === String(currentUserId)
   );
+  if (!envelope) throw new Error("Message was not encrypted for this device");
+
+  let wrappingKey;
+  if (payload.version >= 3) {
+    if (!device.encryption?.privateKey) throw new Error("Device encryption key is unavailable");
+    wrappingKey = await deriveV3WrappingKey(
+      device.encryption.privateKey,
+      envelope.ephemeralPublicKey,
+      device.deviceId,
+      payload
+    );
+  } else {
+    const collection = envelope.keyType === "one-time"
+      ? (device.oneTimePreKeys || [])
+      : (device.signedPreKeys || []);
+    const preKey = collection.find((item) => item.keyId === envelope.keyId);
+    if (!preKey) throw new Error("Required legacy pre-key is no longer available");
+    wrappingKey = await deriveLegacyWrappingKey(
+      preKey.privateKey,
+      envelope.ephemeralPublicKey,
+      device.deviceId,
+      envelope.keyId
+    );
+  }
+
   const rawKey = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: base64ToBytes(envelope.iv) },
-    wrappingKey, base64ToBytes(envelope.ciphertext)
+    wrappingKey,
+    base64ToBytes(envelope.ciphertext)
   );
-  await writeKey(`message-key:${currentUserId}:${message._id}`, new Uint8Array(rawKey));
-  if (envelope.keyType === "one-time") {
-    device.oneTimePreKeys = device.oneTimePreKeys.filter((item) => item.keyId !== envelope.keyId);
+  const messageKey = await importAndCacheMessageKey(cacheKey, payload, rawKey);
+
+  if (payload.version < 3 && envelope.keyType === "one-time") {
+    device.oneTimePreKeys = (device.oneTimePreKeys || [])
+      .filter((item) => item.keyId !== envelope.keyId);
     await writeKey(`device:${device.userId}`, device);
-    scheduleKeyMaintenance(device);
-  } else {
-    scheduleKeyMaintenance(device, true);
   }
-  return crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, ["decrypt"]);
+  return messageKey;
 };
 
 export const decryptMessage = async (message) => {
   if (!message.isEncrypted || message.deletedAt) return message;
   if (!message.encryptedPayload) {
-    return { ...message, text: "Tin nhắn dùng định dạng mã hóa cũ không còn được hỗ trợ" };
+    return { ...message, text: "Định dạng mã hóa cũ không còn được hỗ trợ" };
   }
   const device = await initializeE2EE(currentUserId);
   const payload = message.encryptedPayload;
-  await verifyAndPinSender(payload);
+  await verifyAndPinSender(payload, message);
   const messageKey = await unwrapMessageKey(message, payload, device);
+  const additionalData = payload.version >= 2
+    ? canonicalize(authenticatedMessageMetadata(payload))
+    : `${payload.senderDeviceId}:${payload.context}`;
   const plaintext = await crypto.subtle.decrypt(
     {
-      name: "AES-GCM", iv: base64ToBytes(payload.iv),
-      additionalData: encoder.encode(`${payload.senderDeviceId}:${payload.context}`),
+      name: "AES-GCM",
+      iv: base64ToBytes(payload.iv),
+      additionalData: encoder.encode(additionalData),
     },
-    messageKey, base64ToBytes(payload.ciphertext)
+    messageKey,
+    base64ToBytes(payload.ciphertext)
   );
   const content = JSON.parse(decoder.decode(plaintext));
   return { ...message, text: content.text || "", image: content.image || null, _isDecrypted: true };
 };
 
 export const decryptMessages = async (messages) => Promise.all(messages.map(async (message) => {
-  if (!message.isEncrypted || message._isDecrypted || message.deletedAt) return message;
+  if (message.deletedAt) {
+    if (currentUserId && message._id) {
+      try {
+        await deleteKey(messageKeyCacheKey(currentUserId, message._id));
+      } catch (error) {
+        console.error("E2EE cache cleanup error:", error);
+      }
+    }
+    return message;
+  }
+  if (!message.isEncrypted || message._isDecrypted) return message;
   try {
     return await decryptMessage(message);
   } catch (error) {
@@ -396,11 +437,9 @@ export const decryptMessages = async (messages) => Promise.all(messages.map(asyn
 }));
 
 export const resetE2EESession = () => {
+  sessionVersion += 1;
+  sessionController?.abort();
+  sessionController = null;
   currentUserId = null;
   devicePromise = null;
-  pendingMaintenanceDevice = null;
-  maintenanceRequested = false;
-  emergencyMaintenanceRequested = false;
-  if (maintenanceTimer) clearTimeout(maintenanceTimer);
-  maintenanceTimer = null;
 };

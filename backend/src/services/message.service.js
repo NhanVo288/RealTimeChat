@@ -3,26 +3,33 @@ import Message from "../model/Message.js";
 import Device from "../model/Device.js";
 import ConversationMember from "../model/ConversationMember.js";
 import Conversation from "../model/Conversation.js";
+import {
+  E2EE_ALGORITHM,
+  E2EE_VERSION,
+  validatePayloadShape,
+  verifyPayloadSignature,
+} from "../lib/e2ee.js";
 
-const validCipher = (value, max = 14_000_000) =>
-  typeof value === "string" && value.length > 0 && value.length <= max;
-
-export const validateEncryptedPayload = async (payload, senderId, conversationId) => {
-  if (!payload || payload.version !== 1 || payload.algorithm !== "ECDH-P256/HKDF-SHA256/AES-256-GCM" ||
-    typeof payload.senderDeviceId !== "string" || !validCipher(payload.iv, 100) ||
-    typeof payload.context !== "string" || payload.context.length > 200 ||
-    !validCipher(payload.ciphertext) || !validCipher(payload.signature, 300) ||
-    !Array.isArray(payload.envelopes) || !payload.envelopes.length || payload.envelopes.length > 500) {
-    return false;
-  }
+export const validateEncryptedPayload = async (
+  payload,
+  senderId,
+  conversationId,
+  { expectedMessageId = null, expectedRevision = 0 } = {}
+) => {
+  if (!validatePayloadShape(payload) || payload.version !== E2EE_VERSION ||
+    payload.algorithm !== E2EE_ALGORITHM || payload.senderUserId !== String(senderId) ||
+    payload.revision !== expectedRevision ||
+    (expectedMessageId && payload.messageId !== String(expectedMessageId))) return false;
   const device = await Device.findOne({
     userId: senderId,
     deviceId: payload.senderDeviceId,
     revokedAt: null,
+    encryptionPublicKey: { $ne: null },
+    encryptionKeySignature: { $ne: null },
   }).lean();
-  if (!device || device.identitySigningKey.x !== payload.senderSigningKey?.x ||
+  if (!device || device.identitySigningKey.x !== payload.senderSigningKey.x ||
     device.identitySigningKey.y !== payload.senderSigningKey?.y || payload.senderSigningKey?.d ||
-    payload.senderSigningKey?.kty !== "EC" || payload.senderSigningKey?.crv !== "P-256") return false;
+    !(await verifyPayloadSignature(payload, device.identitySigningKey))) return false;
 
   const memberIds = new Set((await ConversationMember.find({ conversationId })
     .distinct("userId")).map(String));
@@ -31,21 +38,26 @@ export const validateEncryptedPayload = async (payload, senderId, conversationId
     ? `conversation:${conversationId}`
     : `direct:${[...memberIds].sort().join(":")}`;
   if (payload.context !== expectedContext) return false;
-  const activeDevices = await Device.find({ userId: { $in: [...memberIds] }, revokedAt: null })
+  const activeDevices = await Device.find({
+    userId: { $in: [...memberIds] },
+    revokedAt: null,
+    encryptionPublicKey: { $ne: null },
+    encryptionKeySignature: { $ne: null },
+  })
     .select("userId deviceId").lean();
-  const allowedDevices = new Map(activeDevices.map((item) => [item.deviceId, String(item.userId)]));
-  const coveredDevices = new Set(payload.envelopes.map((envelope) => envelope.deviceId));
-  return activeDevices.every((item) => coveredDevices.has(item.deviceId)) &&
+  const deviceRecipient = (userId, deviceId) => `${userId}:${deviceId}`;
+  const allowedDevices = new Set(activeDevices.map((item) =>
+    deviceRecipient(item.userId, item.deviceId)
+  ));
+  const coveredDevices = new Set(payload.envelopes.map((envelope) =>
+    deviceRecipient(envelope.userId, envelope.deviceId)
+  ));
+  return payload.envelopes.length === activeDevices.length &&
+    activeDevices.every((item) => coveredDevices.has(deviceRecipient(item.userId, item.deviceId))) &&
     payload.envelopes.every((envelope) =>
     memberIds.has(String(envelope.userId)) &&
-    allowedDevices.get(envelope.deviceId) === String(envelope.userId) &&
-    typeof envelope.deviceId === "string" &&
-    typeof envelope.keyId === "string" && ["one-time", "signed"].includes(envelope.keyType) &&
-    envelope.ephemeralPublicKey?.kty === "EC" && envelope.ephemeralPublicKey?.crv === "P-256" &&
-    typeof envelope.ephemeralPublicKey?.x === "string" &&
-    typeof envelope.ephemeralPublicKey?.y === "string" &&
-    !envelope.ephemeralPublicKey?.d && validCipher(envelope.iv, 100) &&
-    validCipher(envelope.ciphertext, 500)
+    allowedDevices.has(deviceRecipient(envelope.userId, envelope.deviceId)) &&
+    typeof envelope.deviceId === "string"
   );
 };
 
@@ -95,6 +107,8 @@ export const createMessage = async ({ conversationId, senderId, text, image, isE
     text: encryptedPayload ? "" : text.trim(),
     isEncrypted: Boolean(encryptedPayload) || isEncrypted,
     encryptedPayload,
+    clientMessageId: encryptedPayload?.messageId || null,
+    encryptionRevision: encryptedPayload?.revision || 0,
     attachments,
   });
   return message.populate("senderId", "fullName profilePic");

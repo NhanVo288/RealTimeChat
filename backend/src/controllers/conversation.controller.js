@@ -168,7 +168,9 @@ export const sendConversationMessage = async (req, res) => {
     const { encryptedPayload } = req.body;
     const conversation = await requireConversationMember(req.params.id, req.user._id);
     if (!conversation) return res.status(404).json({ message: "Conversation not found" });
-    if (!(await validateEncryptedPayload(encryptedPayload, req.user._id, conversation._id))) {
+    if (!(await validateEncryptedPayload(encryptedPayload, req.user._id, conversation._id, {
+      expectedRevision: 0,
+    }))) {
       return res.status(400).json({ message: "A valid E2EE payload is required" });
     }
 
@@ -193,6 +195,9 @@ export const sendConversationMessage = async (req, res) => {
     return res.status(201).json(clientMessage);
   } catch (error) {
     console.error("Send conversation message error:", error);
+    if (error?.code === 11000) {
+      return res.status(409).json({ message: "Duplicate encrypted message" });
+    }
     return res.status(500).json({ message: "Server error" });
   }
 };

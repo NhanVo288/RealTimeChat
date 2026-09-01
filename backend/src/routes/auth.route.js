@@ -2,7 +2,7 @@ import express from "express";
 import { signUp, login, logout, updateProfile } from "../controllers/auth.controller.js";
 import { protectRoute } from "../middleware/auth.middleware.js";
 import { arcjetProtect } from "../middleware/arcjet.middleware.js";
-import { claimKeyBundles, getDevices, registerDevice, revokeDevice } from "../controllers/device.controller.js";
+import { getKeyBundles, getDevices, registerDevice, revokeDevice } from "../controllers/device.controller.js";
 
 const router = express.Router();
 router.use(arcjetProtect)
@@ -13,7 +13,7 @@ router.put("/update-profile", protectRoute,updateProfile);
 router.get("/devices", protectRoute, getDevices);
 router.put("/devices/:deviceId", protectRoute, registerDevice);
 router.delete("/devices/:deviceId", protectRoute, revokeDevice);
-router.post("/keys/claim", protectRoute, claimKeyBundles);
+router.post("/keys/bundles", protectRoute, getKeyBundles);
 
 router.get("/check", protectRoute, (req,res) => res.status(200).json(req.user))
 
