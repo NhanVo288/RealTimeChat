@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import {
   E2EE_ALGORITHM,
+  E2EE_VERSION,
   canonicalize,
   deviceEncryptionKeyData,
   KEY_BACKUP_ITERATIONS,
+  KEY_BACKUP_VERSION,
   validateEncryptedKeyBackup,
   parseEncryptionContext,
   unsignedPayload,
@@ -44,7 +46,7 @@ const createSignedPayload = async (identity) => {
     { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]
   );
   const payload = {
-    version: 3,
+    version: E2EE_VERSION,
     algorithm: E2EE_ALGORITHM,
     senderUserId: "111111111111111111111111",
     senderDeviceId: "sender-device",
@@ -125,17 +127,18 @@ test("bundle context is scoped to requester and canonical direct ordering", () =
   });
 });
 
-test("v3 envelope shape has no pre-key metadata", async () => {
+test("current envelope shape contains only static-device wrapping metadata", async () => {
   const identity = await createIdentity();
   const payload = await createSignedPayload(identity);
   assert.equal(Object.hasOwn(payload.envelopes[0], "keyId"), false);
   assert.equal(Object.hasOwn(payload.envelopes[0], "keyType"), false);
   assert.equal(validatePayloadShape(payload), true);
+  assert.equal(validatePayloadShape({ ...payload, version: E2EE_VERSION + 1 }), false);
 });
 
 test("encrypted device-key backups enforce fixed KDF parameters and size limits", () => {
   const backup = {
-    version: 1,
+    version: KEY_BACKUP_VERSION,
     kdf: "PBKDF2-SHA256",
     iterations: KEY_BACKUP_ITERATIONS,
     salt: Buffer.alloc(16).toString("base64"),

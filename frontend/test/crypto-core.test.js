@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   E2EE_ALGORITHM,
+  E2EE_VERSION,
   authenticatedMessageMetadata,
   canonicalize,
   deviceEncryptionKeyData,
@@ -19,9 +20,9 @@ test("message key cache is invalidated when an edited payload has a new signatur
   assert.equal(messageKeyCacheKey("user-a", "message-a"), "message-key:user-a:message-a");
 });
 
-test("v3 signed fields bind sender, message identity, revision and content type", () => {
+test("current signed fields bind sender, message identity, revision and content type", () => {
   const payload = {
-    version: 3,
+    version: E2EE_VERSION,
     algorithm: E2EE_ALGORITHM,
     senderUserId: "sender",
     senderDeviceId: "device",
@@ -45,19 +46,26 @@ test("v3 signed fields bind sender, message identity, revision and content type"
   );
 });
 
-test("legacy v1 signature shape remains stable for stored messages", () => {
-  const payload = {
-    version: 1,
+test("current payload canonicalization is stable across object key order", () => {
+  const first = {
+    version: E2EE_VERSION,
     algorithm: E2EE_ALGORITHM,
+    senderUserId: "sender",
     senderDeviceId: "device",
-    senderSigningKey: {},
-    context: "direct:a:b",
+    senderSigningKey: { kty: "EC", crv: "P-256", x: "x", y: "y" },
+    context: "conversation:id",
+    messageId: "message-id",
+    revision: 0,
+    contentType: "text",
     iv: "iv",
     ciphertext: "ciphertext",
     envelopes: [],
-    senderUserId: "must-not-be-signed-for-v1",
   };
-  assert.equal(Object.hasOwn(unsignedPayload(payload), "senderUserId"), false);
+  const second = Object.fromEntries(Object.entries(first).reverse());
+  assert.equal(
+    canonicalize(unsignedPayload(first)),
+    canonicalize(unsignedPayload(second))
+  );
 });
 
 test("identity pins are scoped to owner, peer user and peer device", () => {
