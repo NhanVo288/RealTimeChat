@@ -59,6 +59,8 @@ export const useChatStore = create((set, get) => ({
   messages: [],
   activeTab: "chats",
   selectedUser: null,
+  replyingTo: null,
+  setReplyingTo: (replyingTo) => set({ replyingTo }),
   isUserLoading: false,
   isMessagesLoading: false,
   isSoundEnable: JSON.parse(localStorage.getItem("isSoundEnable")) === true,
@@ -75,7 +77,7 @@ export const useChatStore = create((set, get) => ({
     set({ isSoundEnable: newState });
   },
   setActiveTabs: (tab) => set({ activeTab: tab }),
-  setSelectedUser: (selectedUser) => set({ selectedUser: selectedUser }),
+  setSelectedUser: (selectedUser) => set({ selectedUser, replyingTo: null }),
 
   subscribeToConversationEvents: () => {
     if (get().conversationEventSource) return;
@@ -151,11 +153,15 @@ export const useChatStore = create((set, get) => ({
       const belongsToSelection = selectedUser.type === "group"
         ? updatedMessage.conversationId === selectedUser._id
         : updatedMessage.senderId === getDirectUserId(selectedUser) ||
-          updatedMessage.conversationId === selectedUser._id;
+          updatedMessage.conversationId === selectedUser._id ||
+          get().messages.some((item) => item.conversationId === updatedMessage.conversationId);
       if (!belongsToSelection) return;
       const [message] = await decryptMessages([updatedMessage]);
       set((state) => ({
-        messages: state.messages.map((item) => item._id === message._id ? message : item),
+        messages: state.messages.map((item) => item._id === message._id
+          ? message
+          : item.replyTo?._id === message._id ? { ...item, replyTo: message } : item),
+        replyingTo: state.replyingTo?._id === message._id ? message : state.replyingTo,
       }));
     };
     eventSource.addEventListener("message-updated", updateMessage);
@@ -585,6 +591,7 @@ export const useChatStore = create((set, get) => ({
       conversationId: selectedUser.type === "group" ? selectedUser._id : undefined,
       text: payload.text || "",
       image: payload.image || null,
+      replyTo: payload.replyTo || null,
       createdAt: new Date().toISOString(),
       clientMessageId,
       encryptionRevision: 0,
@@ -624,7 +631,7 @@ export const useChatStore = create((set, get) => ({
         getEncryptionContext(selectedUser),
         { messageId: clientMessageId, revision: 0 }
       );
-      body = { encryptedPayload };
+      body = { encryptedPayload, replyTo: payload.replyTo?._id || null };
 
       const res = await axiosInstance.post(
         endpoint,
@@ -641,6 +648,7 @@ export const useChatStore = create((set, get) => ({
         ),
       }));
       get().applyConversationMessage(serverMessage);
+      return true;
     } catch (error) {
       // thất bại thi gỡ optimistic message và báo lỗi
       set((state) => ({
@@ -651,6 +659,7 @@ export const useChatStore = create((set, get) => ({
         error.response?.data?.message || error.message ||
           "Gửi tin nhắn thất bại. Vui lòng thử lại."
       );
+      return false;
     }
   },
   subscribeToMessage: () => {

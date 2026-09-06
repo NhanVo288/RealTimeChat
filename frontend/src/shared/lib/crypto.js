@@ -647,6 +647,10 @@ export const decryptMessage = async (message) => {
 };
 
 export const decryptMessages = async (messages) => Promise.all(messages.map(async (message) => {
+  if (message.replyTo && typeof message.replyTo === "object") {
+    const [replyTo] = await decryptMessages([{ ...message.replyTo, replyTo: null }]);
+    message = { ...message, replyTo };
+  }
   if (message.deletedAt) {
     if (currentUserId && message._id) {
       try {

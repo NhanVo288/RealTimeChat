@@ -1,4 +1,5 @@
 import cloudinary from "../lib/cloudinary.js";
+import mongoose from "mongoose";
 import Message from "../model/Message.js";
 import Device from "../model/Device.js";
 import ConversationMember from "../model/ConversationMember.js";
@@ -9,6 +10,18 @@ import {
   validatePayloadShape,
   verifyPayloadSignature,
 } from "../lib/e2ee.js";
+
+export const replyPopulation = {
+  path: "replyTo",
+  select: "conversationId senderId type text attachments isEncrypted encryptedPayload clientMessageId encryptionRevision deletedAt createdAt",
+  populate: { path: "senderId", select: "fullName profilePic" },
+};
+
+export const validateReplyTarget = async (replyTo, conversationId) => {
+  if (replyTo == null) return true;
+  if (typeof replyTo !== "string" || !mongoose.isObjectIdOrHexString(replyTo)) return false;
+  return Boolean(await Message.exists({ _id: replyTo, conversationId, deletedAt: null, type: { $ne: "system" } }));
+};
 
 export const validateEncryptedPayload = async (
   payload,
@@ -84,10 +97,13 @@ export const toClientMessage = (message) => {
         }
       : null,
     image: firstImage?.url || null,
+    replyTo: data.replyTo?._id && data.replyTo?.conversationId
+      ? toClientMessage({ ...data.replyTo, replyTo: null })
+      : null,
   };
 };
 
-export const createMessage = async ({ conversationId, senderId, text, image, isEncrypted = false, encryptedPayload = null }) => {
+export const createMessage = async ({ conversationId, senderId, text, image, isEncrypted = false, encryptedPayload = null, replyTo = null }) => {
   const attachments = [];
   if (image) {
     const uploadResponse = await cloudinary.uploader.upload(image, {
@@ -111,6 +127,7 @@ export const createMessage = async ({ conversationId, senderId, text, image, isE
     clientMessageId: encryptedPayload?.messageId || null,
     encryptionRevision: encryptedPayload?.revision || 0,
     attachments,
+    replyTo,
   });
-  return message.populate("senderId", "fullName profilePic");
+  return message.populate([{ path: "senderId", select: "fullName profilePic" }, replyPopulation]);
 };

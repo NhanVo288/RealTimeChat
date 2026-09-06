@@ -8,7 +8,7 @@ import {
   publishUserEvent,
   publishUsersEvent,
 } from "../services/event.service.js";
-import { createMessage, toClientMessage, validateEncryptedPayload } from "../services/message.service.js";
+import { createMessage, toClientMessage, validateEncryptedPayload, validateReplyTarget } from "../services/message.service.js";
 import { getMessagePage } from "../services/message-pagination.service.js";
 import mongoose from "mongoose";
 
@@ -165,7 +165,7 @@ export const getConversationMessages = async (req, res) => {
 
 export const sendConversationMessage = async (req, res) => {
   try {
-    const { encryptedPayload } = req.body;
+    const { encryptedPayload, replyTo = null } = req.body;
     const conversation = await requireConversationMember(req.params.id, req.user._id);
     if (!conversation) return res.status(404).json({ message: "Conversation not found" });
     if (!(await validateEncryptedPayload(encryptedPayload, req.user._id, conversation._id, {
@@ -175,12 +175,16 @@ export const sendConversationMessage = async (req, res) => {
       return res.status(400).json({ message: "A valid E2EE payload is required" });
     }
 
+    if (!(await validateReplyTarget(replyTo, conversation._id))) {
+      return res.status(400).json({ message: "Reply target must be an existing message in this conversation" });
+    }
     const message = await createMessage({
       conversationId: conversation._id,
       senderId: req.user._id,
       text: "",
       image: null,
       encryptedPayload,
+      replyTo,
     });
     await Conversation.findByIdAndUpdate(conversation._id, {
       lastMessage: message._id,

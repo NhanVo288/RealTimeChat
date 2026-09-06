@@ -7,7 +7,7 @@ import {
   getDirectConversation,
   getOrCreateDirectConversation,
 } from "../services/conversation.service.js";
-import { createMessage, toClientMessage, validateEncryptedPayload } from "../services/message.service.js";
+import { createMessage, toClientMessage, validateEncryptedPayload, validateReplyTarget, replyPopulation } from "../services/message.service.js";
 import { getMessagePage } from "../services/message-pagination.service.js";
 import { publishUsersEvent } from "../services/event.service.js";
 
@@ -48,7 +48,7 @@ export const getChatByUserId = async (req, res) => {
 export const sendMessage = async (req, res) => {
   try {
     const { id: receiverId } = req.params;
-    const { encryptedPayload } = req.body;
+    const { encryptedPayload, replyTo = null } = req.body;
     const senderId = req.user._id;
 
     if (senderId.toString() === receiverId) {
@@ -64,12 +64,16 @@ export const sendMessage = async (req, res) => {
     }))) {
       return res.status(400).json({ message: "A valid E2EE payload is required" });
     }
+    if (!(await validateReplyTarget(replyTo, conversation._id))) {
+      return res.status(400).json({ message: "Reply target must be an existing message in this conversation" });
+    }
     const message = await createMessage({
       conversationId: conversation._id,
       senderId,
       text: "",
       image: null,
       encryptedPayload,
+      replyTo,
     });
     await Conversation.findByIdAndUpdate(conversation._id, {
       lastMessage: message._id,
@@ -153,7 +157,7 @@ export const editMessage = async (req, res) => {
         editedAt: new Date(),
       },
       { new: true }
-    ).populate("senderId", "fullName profilePic");
+    ).populate("senderId", "fullName profilePic").populate(replyPopulation);
     if (!message) return res.status(409).json({ message: "Message was updated by another request" });
 
     const payload = toClientMessage(message);
@@ -186,7 +190,7 @@ export const deleteMessage = async (req, res) => {
       { _id: req.params.id, senderId: req.user._id, deletedAt: null },
       { text: "", isEncrypted: false, encryptedPayload: null, deletedAt: new Date(), editedAt: null },
       { new: true }
-    ).populate("senderId", "fullName profilePic");
+    ).populate("senderId", "fullName profilePic").populate(replyPopulation);
     if (!message) return res.status(404).json({ message: "Message not found" });
 
     const payload = toClientMessage(message);

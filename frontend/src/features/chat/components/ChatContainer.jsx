@@ -1,12 +1,13 @@
 import React, { useEffect, useRef } from "react";
 import { useState } from "react";
-import { Check, Pencil, RotateCcw, X } from "lucide-react";
+import { Check, Pencil, Reply, RotateCcw, X } from "lucide-react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../../auth/store/useAuthStore";
 import ChatHeader from "./ChatHeader";
 import NoChatHolder from "./NoChatHolder";
 import MessageInput from "./MessageInput";
 import MessageSkeleton from "../../../shared/components/MessageLoading";
+import ReplyPreview from "./ReplyPreview";
 
 export default function ChatContainer() {
   const {
@@ -22,6 +23,7 @@ export default function ChatContainer() {
     editMessage,
     deleteMessage,
     markConversationRead,
+    setReplyingTo,
   } = useChatStore();
   const { authUser } = useAuthStore();
   const messagesContainer = useRef(null);
@@ -41,8 +43,11 @@ export default function ChatContainer() {
     getMessagesBySelection(currentSelection);
     subscribeToMessage();
 
-    return () => unsubscribeMessage();
-  }, [selectedConversationId, getMessagesBySelection, subscribeToMessage, unsubscribeMessage]);
+    return () => {
+      unsubscribeMessage();
+      setReplyingTo(null);
+    };
+  }, [selectedConversationId, getMessagesBySelection, subscribeToMessage, unsubscribeMessage, setReplyingTo]);
 
   useEffect(() => {
     if (isMessagesLoading || isLoadingOlderMessages || !messagesContainer.current) return;
@@ -171,6 +176,11 @@ export default function ChatContainer() {
                           : "rounded-bl-md border border-slate-700/70 bg-slate-800/90 text-slate-200"
                       }`}
                     >
+                    {!msg.deletedAt && msg.replyTo && (
+                      <div className="mb-2">
+                        <ReplyPreview message={messages.find((message) => message._id === msg.replyTo._id) || msg.replyTo} />
+                      </div>
+                    )}
                     {editingMessageId === msg._id ? (
                       <form onSubmit={handleEditSubmit} className="flex min-w-56 items-center gap-2">
                         <input
@@ -212,8 +222,18 @@ export default function ChatContainer() {
                       </>
                     )}
                     </div>
-                    {isOwnMessage && !msg.deletedAt && editingMessageId !== msg._id && (
-                      <div className="mt-1 flex gap-1 opacity-0 transition group-hover:opacity-100">
+                    {!msg.deletedAt && !msg.isOptimistic && msg.type !== "system" && editingMessageId !== msg._id && (
+                      <div className="mt-1 flex gap-1 sm:opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+                        <button
+                          type="button"
+                          title="Trả lời tin nhắn"
+                          aria-label="Trả lời tin nhắn"
+                          onClick={() => setReplyingTo(msg)}
+                          className="rounded p-2 text-slate-400 hover:bg-slate-800 hover:text-cyan-300"
+                        >
+                          <Reply size={15} />
+                        </button>
+                        {isOwnMessage && <>
                         <button
                           title="Sửa tin nhắn"
                           onClick={() => {
@@ -231,6 +251,7 @@ export default function ChatContainer() {
                         >
                           <RotateCcw size={13} />
                         </button>
+                        </>}
                       </div>
                     )}
                   </div>
@@ -244,7 +265,7 @@ export default function ChatContainer() {
           <NoChatHolder name={selectedUser.type === "group" ? selectedUser.name : selectedUser.fullName} />
         )}
       </div>
-      <MessageInput />
+      <MessageInput key={selectedConversationId} />
     </>
   );
 }

@@ -1,5 +1,5 @@
 import Message from "../model/Message.js";
-import { toClientMessage } from "./message.service.js";
+import { toClientMessage, replyPopulation } from "./message.service.js";
 
 const defaultPageSize = 30;
 const maxPageSize = 100;
@@ -17,6 +17,7 @@ export const getMessagePage = async (conversationId, query = {}) => {
 
   const messages = await Message.find(filter)
     .populate("senderId", "fullName profilePic")
+    .populate(replyPopulation)
     .sort({ _id: isForwardSync ? 1 : -1 })
     .limit(limit + 1)
     .lean();

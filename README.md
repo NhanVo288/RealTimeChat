@@ -11,6 +11,7 @@ RealTimeChat là ứng dụng chat thời gian thực full-stack dùng React/Vit
 - Admin nhóm có thể thêm thành viên, loại thành viên thường và xóa nhóm.
 - Gửi nội dung văn bản hoặc ảnh đã mã hóa đầu cuối.
 - Sửa và thu hồi tin nhắn do chính mình gửi.
+- Trả lời một tin nhắn cụ thể trong chat riêng hoặc nhóm; xem trước, hủy trích dẫn và giữ trích dẫn khi tải lại lịch sử.
 - Optimistic UI, danh sách hội thoại, preview tin nhắn cuối và số tin chưa đọc.
 - Phân trang lịch sử bằng cursor, infinite scroll và đồng bộ tin bị lỡ sau reconnect.
 - Trạng thái online hỗ trợ nhiều tab/thiết bị cho cùng một tài khoản.
@@ -37,7 +38,7 @@ RealTimeChat là ứng dụng chat thời gian thực full-stack dùng React/Vit
 ```text
 React UI
   ├── REST/Axios ───────────────> Express controllers ──> MongoDB
-  ├── Auth refresh/logout ─────> Redis/Upstash (hash RT và TTL)
+  ├── Auth refresh/logout ─────> Express ──> Redis/Upstash (hash RT và TTL)
   ├── Socket.IO <─────────────── newMessage, online users, session revoke
   ├── EventSource/SSE <──────── group/member/message lifecycle events
   └── Web Crypto + IndexedDB
@@ -75,6 +76,8 @@ RealTimeChat/
 └── README.md
 ```
 
+Các màn hình đang chạy được import từ `frontend/src/features/` và `frontend/src/shared/`. Repository còn các thư mục cũ như `frontend/src/components/` và `frontend/src/store/`; luồng chat hiện tại dùng `features/chat/`.
+
 ## Yêu cầu
 
 - Node.js `20.19+` thuộc nhánh 20 hoặc `>= 22.12` và npm, theo yêu cầu của Vite 7/plugin React hiện tại. Root `package.json` mới khai báo mức rộng hơn là `>= 20`.
@@ -94,6 +97,8 @@ Từ thư mục root:
 npm install --prefix backend
 npm install --prefix frontend
 ```
+
+Nếu PowerShell chặn `npm.ps1` do execution policy, dùng `npm.cmd` thay cho `npm` trong các lệnh bên dưới.
 
 ### Backend
 
@@ -125,7 +130,7 @@ TLS_CERT_PATH=
 
 | Biến | Mục đích |
 | --- | --- |
-| `PORT` | Port HTTP/HTTPS của backend |
+| `PORT` | Port HTTP/HTTPS của backend; cần đặt rõ, source không có giá trị mặc định |
 | `NODE_ENV` | Môi trường chạy; ảnh hưởng cookie và static frontend |
 | `MONGO_URI` | MongoDB connection string |
 | `REDIS_URL` | Redis connection string; Upstash dùng `rediss://` (TLS), mặc định local là `redis://127.0.0.1:6379` |
@@ -194,7 +199,7 @@ Frontend:
 npm run dev --prefix frontend
 ```
 
-Địa chỉ mặc định:
+Địa chỉ khi dùng cấu hình development mẫu ở trên:
 
 - Frontend: `http://localhost:5173`
 - Backend: `http://localhost:3000`
@@ -212,9 +217,20 @@ Health check trả về:
 Lệnh build ở root cài dependency cho hai package và tạo `frontend/dist`:
 
 ```powershell
+$env:NODE_ENV="production"
 npm run build
 npm start
 ```
+
+Trước khi build production cùng origin với backend, bỏ các giá trị `VITE_API_URL`, `VITE_BACKEND_URL`, `VITE_EVENTS_URL` trỏ tới localhost khỏi `frontend/.env`, hoặc ghi đè trong `frontend/.env.production`:
+
+```env
+VITE_API_URL=/api
+VITE_BACKEND_URL=/
+VITE_EVENTS_URL=/api/messages/events
+```
+
+Nếu frontend/backend khác origin, đặt các URL HTTPS thực tế tương ứng. Các biến `VITE_*` được đóng vào bundle lúc build; đổi chúng cần build lại.
 
 Khi `NODE_ENV=production`, backend phục vụ frontend đã build và fallback về `index.html` cho client-side routing. Cần cấu hình đúng `CLIENT_URL`, HTTPS/reverse proxy, cookie, MongoDB, `REDIS_URL` và các dịch vụ ngoài trước khi deploy.
 
@@ -248,7 +264,7 @@ Một session chỉ bind với một `deviceId`. Public identity key và public 
 | `GET` | `/api/messages/contacts` | — | Lấy các user khác, sắp xếp theo tên |
 | `GET` | `/api/messages/chats` | — | Lấy các chat partner đã có conversation chung |
 | `GET` | `/api/messages/:userId` | `limit`, `before` hoặc `after` | Lấy lịch sử direct chat |
-| `POST` | `/api/messages/send/:userId` | `{ encryptedPayload }` | Tạo direct conversation nếu cần và gửi message |
+| `POST` | `/api/messages/send/:userId` | `{ encryptedPayload, replyTo? }` | Tạo direct conversation nếu cần và gửi message |
 
 Không thể chat với chính mình. User nhận phải tồn tại và có device E2EE đang hoạt động để client tạo đủ envelope.
 
@@ -259,7 +275,7 @@ Không thể chat với chính mình. User nhận phải tồn tại và có dev
 | `GET` | `/api/messages/conversations` | — | Lấy conversation, members, last message và unread |
 | `POST` | `/api/messages/groups` | `{ name, memberIds, avatar? }` | Tạo nhóm có ít nhất 3 thành viên |
 | `GET` | `/api/messages/conversations/:id` | `limit`, `before` hoặc `after` | Lấy message nếu requester là member |
-| `POST` | `/api/messages/conversations/:id/send` | `{ encryptedPayload }` | Gửi message vào conversation |
+| `POST` | `/api/messages/conversations/:id/send` | `{ encryptedPayload, replyTo? }` | Gửi message vào conversation |
 | `POST` | `/api/messages/conversations/:id/read` | `{ messageId }` | Tiến read cursor và cập nhật unread |
 | `DELETE` | `/api/messages/conversations/:id` | — | Admin xóa nhóm |
 | `POST` | `/api/messages/conversations/:id/members/:memberId` | — | Admin thêm member |
@@ -277,6 +293,16 @@ Tên nhóm tối đa 100 ký tự. Khi thêm member, read cursor bắt đầu t�
 
 Message mới và message sửa phải có payload E2EE hợp lệ, đúng sender, device của session, conversation context, message ID, revision và đầy đủ envelope cho mọi active device của thành viên.
 
+### Trả lời một tin nhắn cụ thể
+
+- Trong chat riêng hoặc nhóm, chọn biểu tượng **Trả lời** dưới tin nhắn của mình hoặc người khác. Khung soạn hiển thị tên người gửi và nội dung trích dẫn; ảnh không có chú thích hiển thị “Hình ảnh”.
+- Bấm **×** hoặc **Esc** trong ô nhập để hủy trả lời. Chuyển cuộc trò chuyện cũng xóa lựa chọn trả lời.
+- Gửi thành công sẽ xóa nội dung soạn và lựa chọn trả lời; gửi thất bại giữ lại để thử lại.
+- Hai API gửi nhận `replyTo` tùy chọn là chuỗi MongoDB ObjectId của tin gốc; bỏ qua hoặc gửi `null` để gửi bình thường. Tin gốc phải thuộc cùng conversation, chưa bị thu hồi và không có type `system`; vi phạm trả `400`.
+- MongoDB lưu tham chiếu `Message.replyTo`. Response gửi, lịch sử và cập nhật tin nhắn populate tin gốc cùng thông tin người gửi ở một cấp; không tải chuỗi trả lời lồng nhau. Lịch sử vẫn có trích dẫn khi tin gốc nằm ngoài trang đang tải.
+- Nội dung tin gốc vẫn dùng encrypted payload và được giải mã tại client. `replyTo` là metadata bên ngoài payload đã ký; quan hệ trả lời do backend kiểm tra. Client không gửi bản sao plaintext của trích dẫn.
+- Trích dẫn phản ánh nội dung hiện tại của tin gốc; khi nhận sự kiện thu hồi, giao diện hiển thị “Tin nhắn đã thu hồi”. Không thể chọn tin đang gửi tạm thời, tin hệ thống hoặc tin đã thu hồi để trả lời.
+
 ### Phân trang message
 
 `GET` lịch sử trả về:
@@ -292,7 +318,7 @@ Message mới và message sửa phải có payload E2EE hợp lệ, đúng sende
 - `limit` mặc định `30`, tối thiểu `1`, tối đa `100`.
 - `before=<messageId>` tải các message cũ hơn.
 - `after=<messageId>` tải các message mới hơn để catch up sau reconnect.
-- Response luôn sắp xếp message theo thời gian tăng dần.
+- Response sắp xếp message theo `_id` tăng dần (MongoDB ObjectId); cursor cũng dựa trên `_id`.
 - Nếu direct conversation chưa tồn tại, endpoint direct trả mảng rỗng `[]`.
 
 ## Realtime và đồng bộ
@@ -409,11 +435,11 @@ API backup chỉ nhận blob đã mã hóa và revision, không nhận private k
 - `DeviceKeyBackup`: encrypted backup duy nhất theo user và revision tăng dần.
 - `Conversation`: loại direct/group, tên/avatar, creator và message cuối.
 - `ConversationMember`: role, read cursor, unread count, mute và pin.
-- `Message`: conversation, sender, loại nội dung, encrypted payload, client message ID, encryption revision, edit/revoke timestamps.
+- `Message`: conversation, sender, loại nội dung, encrypted payload, client message ID, encryption revision, tham chiếu `replyTo`, edit/revoke timestamps.
 
 ## Bảo mật và giới hạn
 
-- Backend không thấy plaintext text/ảnh nhưng vẫn thấy metadata: user, device, membership, thời gian, kích thước ciphertext và traffic pattern.
+- Với tin nhắn E2EE, backend không thấy plaintext text/ảnh nhưng vẫn thấy metadata: user, device, membership, thời gian, quan hệ trả lời (`replyTo`), kích thước ciphertext và traffic pattern.
 - Ảnh được đưa vào plaintext JSON rồi mã hóa tại client; UI giới hạn ảnh 5 MB và backend giới hạn request body 10 MB.
 - Cookie dùng `httpOnly`; `sameSite=lax` trên HTTP development, `sameSite=none` và `secure` ngoài development hoặc khi backend có TLS key.
 - Revoke device ngăn nhận envelope mới và vô hiệu hóa session, nhưng không thể xóa dữ liệu đã lưu trên thiết bị từ xa.
@@ -421,7 +447,7 @@ API backup chỉ nhận blob đã mã hóa và revision, không nhận private k
 - Thiết kế static ECDH chưa có forward secrecy hay post-compromise security như Double Ratchet.
 - Thu hồi message không thể xóa plaintext mà người nhận đã xem, chụp hoặc lưu.
 - Realtime state nằm trong memory của một Node process; scale ngang cần shared pub/sub và Socket.IO adapter.
-- Chưa có typing indicator, delivery/read receipt cho sender, reply UI, file attachment tổng quát hoặc push notification.
+- Chưa có typing indicator, delivery/read receipt cho sender, file attachment tổng quát hoặc push notification.
 
 ## Kiểm thử
 
@@ -450,6 +476,7 @@ Test hiện tại tập trung vào:
 - Direct/group context và canonical ordering.
 - Định dạng encrypted key backup và tham số KDF.
 - Cache message key, identity pin và merge historical device keys.
+- Reply: từ chối ID sai định dạng, kiểm tra điều kiện lọc tin gốc theo conversation/trạng thái, lưu tham chiếu và populate trích dẫn mã hóa trong lịch sử ngoài trang hiện tại (mock Mongoose).
 
 Mặc định chạy unit/protocol test; test controller auth mock MongoDB và Redis. Test tích hợp Lua với Redis thật tự skip nếu thiếu `REDIS_TEST_URL`. Chạy thêm test này bằng một Redis database dành cho kiểm thử:
 
