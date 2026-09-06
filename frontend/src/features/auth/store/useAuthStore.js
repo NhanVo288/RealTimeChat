@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { axiosInstance } from "../../../shared/lib/axios";
+import { axiosInstance, refreshAccessToken } from "../../../shared/lib/axios";
 import toast from "react-hot-toast";
 import { io } from 'socket.io-client'
 import { initializeE2EE, resetE2EESession } from "../../../shared/lib/crypto";
@@ -127,10 +127,15 @@ export const useAuthStore = create((set,get) => ({
     socket.on("disconnect", () => {
       set({ onlineUsers: get().onlineUsers.filter((id) => id !== authUser._id) });
     })
-    socket.on("connect_error", (error) => {
+    socket.on("connect_error", async (error) => {
       console.error("Socket connection error:", error.message);
-      if (/session|revoked|unauthorized/i.test(error.message)) {
-        get().handleSessionRevoked();
+      try {
+        await refreshAccessToken();
+        if (get().authUser && get().socket === socket) socket.connect();
+      } catch (refreshError) {
+        if (refreshError.response?.status === 401 && get().socket === socket) {
+          get().handleSessionRevoked();
+        }
       }
     })
   },

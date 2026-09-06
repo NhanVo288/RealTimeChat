@@ -4,7 +4,7 @@ RealTimeChat là ứng dụng chat thời gian thực full-stack dùng React/Vit
 
 ## Tính năng chính
 
-- Đăng ký, đăng nhập, đăng xuất bằng JWT trong HTTP-only cookie.
+- Đăng ký, đăng nhập, đăng xuất bằng HTTP-only cookie; access token 15 phút và refresh token rotation qua Redis/Upstash.
 - Mỗi lần đăng nhập có một `AuthSession`; session được liên kết với thiết bị E2EE tương ứng.
 - Quản lý và thu hồi thiết bị từ xa tại `/security/devices`; session, Socket.IO và SSE của thiết bị bị thu hồi sẽ bị ngắt.
 - Chat trực tiếp và chat nhóm từ 3 thành viên.
@@ -27,8 +27,8 @@ RealTimeChat là ứng dụng chat thời gian thực full-stack dùng React/Vit
 | Mã hóa client | Web Crypto API, IndexedDB |
 | Backend | Node.js 20+, Express 4, Mongoose 8 |
 | Realtime | Socket.IO 4, Server-Sent Events |
-| Database | MongoDB |
-| Xác thực | JWT, HTTP-only cookie, bcryptjs |
+| Lưu trữ | MongoDB cho dữ liệu ứng dụng; Redis/Upstash cho hash refresh token và TTL |
+| Xác thực | JWT access/refresh token, Redis rotation, HTTP-only cookie, bcryptjs |
 | Dịch vụ ngoài | Cloudinary, Resend, Arcjet |
 | Test | Node.js test runner, ESLint, Vite build |
 
@@ -37,6 +37,7 @@ RealTimeChat là ứng dụng chat thời gian thực full-stack dùng React/Vit
 ```text
 React UI
   ├── REST/Axios ───────────────> Express controllers ──> MongoDB
+  ├── Auth refresh/logout ─────> Redis/Upstash (hash RT và TTL)
   ├── Socket.IO <─────────────── newMessage, online users, session revoke
   ├── EventSource/SSE <──────── group/member/message lifecycle events
   └── Web Crypto + IndexedDB
@@ -76,12 +77,13 @@ RealTimeChat/
 
 ## Yêu cầu
 
-- Node.js `>= 20` và npm.
+- Node.js `20.19+` thuộc nhánh 20 hoặc `>= 22.12` và npm, theo yêu cầu của Vite 7/plugin React hiện tại. Root `package.json` mới khai báo mức rộng hơn là `>= 20`.
 - MongoDB local hoặc MongoDB Atlas.
+- Redis/Upstash khả dụng; backend chờ kết nối Redis trước khi mở cổng HTTP.
 - Trình duyệt hỗ trợ Web Crypto API và IndexedDB.
 - HTTPS hoặc `localhost` để trình duyệt cung cấp secure context cho E2EE.
 - Tài khoản Cloudinary nếu dùng cập nhật avatar.
-- Resend API key nếu dùng email chào mừng.
+- `RESEND_KEY` để khởi tạo Resend client khi backend khởi động; source hiện tại chưa có chế độ bỏ qua email khi thiếu key.
 - Arcjet key cho lớp bảo vệ request.
 
 ## Cài đặt
@@ -101,6 +103,7 @@ Tạo `backend/.env`:
 PORT=3000
 NODE_ENV=development
 MONGO_URI=mongodb://127.0.0.1:27017/realtime-chat
+REDIS_URL=rediss://default:<PASSWORD>@<YOUR-DATABASE>.upstash.io:6379
 JWT_SECRET=replace-with-a-long-random-secret
 CLIENT_URL=http://localhost:5173
 
@@ -125,12 +128,27 @@ TLS_CERT_PATH=
 | `PORT` | Port HTTP/HTTPS của backend |
 | `NODE_ENV` | Môi trường chạy; ảnh hưởng cookie và static frontend |
 | `MONGO_URI` | MongoDB connection string |
+| `REDIS_URL` | Redis connection string; Upstash dùng `rediss://` (TLS), mặc định local là `redis://127.0.0.1:6379` |
 | `JWT_SECRET` | Ký và xác minh JWT |
 | `CLIENT_URL` | Frontend origin dùng cho CORS, Socket.IO và email |
 | `CLOUD_NAME`, `CLOUD_API_KEY`, `CLOUD_API_SECRET` | Cấu hình Cloudinary |
 | `RESEND_KEY`, `EMAIL_FROM`, `EMAIL_FROM_NAME` | Cấu hình email |
 | `ARCJET_KEY`, `ARCJET_ENV` | Cấu hình Arcjet |
 | `TLS_KEY_PATH`, `TLS_CERT_PATH` | Private key và certificate cho HTTPS tùy chọn |
+
+### Redis/Upstash và refresh token rotation
+
+Trong Upstash Console, mở database → **Connect → Node.js (node-redis)** và chép Redis connection URL vào `REDIS_URL` trong `backend/.env`. Client hiện tại là package `redis`, kết nối TCP qua TLS với `rediss://`; không đọc `UPSTASH_REDIS_REST_URL` hay `UPSTASH_REDIS_REST_TOKEN`. Nếu tự ghép URL, cần URL-encode password có ký tự đặc biệt. Xem [hướng dẫn node-redis của Upstash](https://upstash.com/docs/redis/search/adapters/node-redis).
+
+Khởi động lại backend sau khi đổi cấu hình. Dùng Upstash không cần Docker. Nếu chạy Redis local, tự khởi động Redis rồi đặt `REDIS_URL=redis://127.0.0.1:6379`; repository hiện không có file Compose.
+
+- Signup/login cấp cookie `jwt` chứa access token (15 phút) và cookie `refreshToken` có scope `/api/auth` (tối đa 7 ngày).
+- Redis lưu SHA-256 của RT tại key `auth:refresh:<sessionId>`, với TTL khớp thời điểm hết hạn session MongoDB. Không lưu RT dạng rõ.
+- `POST /api/auth/refresh` xác minh RT và session còn hiệu lực, dùng Lua để so sánh/thay hash nguyên tử, rồi cấp cặp token mới. Rotation giữ nguyên hạn cuối 7 ngày tính từ lúc tạo session.
+- RT đã dùng, hết hạn hoặc bị thu hồi trả 401. Code hiện từ chối replay nhưng không tự thu hồi toàn bộ chuỗi RT khi phát hiện token cũ.
+- Logout revoke session MongoDB, xóa key RT trong Redis, xóa cả hai cookie và ngắt Socket.IO/SSE. Access token hết hạn vẫn có thể logout. Lỗi lưu trữ trả 503 để client thử lại.
+- Axios gom các request refresh đang chạy và thử lại API một lần sau 401. Web Locks phối hợp giữa các tab khi trình duyệt hỗ trợ. Luồng reconnect Socket.IO/SSE cũng thử phục hồi access token.
+- Cookie JWT từ phiên bản trước khi tách access/refresh yêu cầu đăng nhập lại. Nếu Redis mất dữ liệu, RT tương ứng không còn hợp lệ; access token đã cấp vẫn được kiểm tra theo JWT và session MongoDB cho đến khi hết hạn hoặc session bị revoke.
 
 ### Frontend
 
@@ -198,7 +216,7 @@ npm run build
 npm start
 ```
 
-Khi `NODE_ENV=production`, backend phục vụ frontend đã build và fallback về `index.html` cho client-side routing. Cần cấu hình đúng `CLIENT_URL`, HTTPS/reverse proxy, cookie, MongoDB và các dịch vụ ngoài trước khi deploy.
+Khi `NODE_ENV=production`, backend phục vụ frontend đã build và fallback về `index.html` cho client-side routing. Cần cấu hình đúng `CLIENT_URL`, HTTPS/reverse proxy, cookie, MongoDB, `REDIS_URL` và các dịch vụ ngoài trước khi deploy.
 
 ## API
 
@@ -209,8 +227,9 @@ Các route `/api/messages/*` đều qua Arcjet và `protectRoute`. Các route au
 | Method | Endpoint | Auth | Body chính | Chức năng |
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/auth/signup` | Không | `{ fullName, email, password }` | Tạo user và session; mật khẩu tối thiểu 6 ký tự |
-| `POST` | `/api/auth/login` | Không | `{ email, password }` | Tạo session và phát JWT cookie 7 ngày |
-| `POST` | `/api/auth/logout` | Cookie nếu có | — | Revoke session hiện tại và xóa cookie |
+| `POST` | `/api/auth/login` | Không | `{ email, password }` | Tạo session, access token 15 phút và refresh token tối đa 7 ngày |
+| `POST` | `/api/auth/refresh` | Refresh cookie | — | Xoay vòng refresh token trong Redis và cấp access token mới |
+| `POST` | `/api/auth/logout` | Cookie nếu có | — | Revoke session và RT trong Redis, xóa cả hai cookie |
 | `GET` | `/api/auth/check` | Có | — | Lấy user hiện tại, không gồm password |
 | `PUT` | `/api/auth/update-profile` | Có | `{ profilePic }` | Upload và cập nhật avatar |
 | `GET` | `/api/auth/devices` | Có | — | Liệt kê thiết bị chưa bị thu hồi |
@@ -308,7 +327,7 @@ Socket.IO phụ trách message mới và presence; SSE phụ trách thay đổi 
 
 ## E2EE hiện tại
 
-Source dùng `E2EE_VERSION = 3` và thuật toán:
+Payload mới dùng `E2EE_VERSION = 3`; backend chỉ nhận payload gửi/sửa ở version này. Frontend còn nhánh giải mã version 1/2 nếu khóa legacy cần thiết vẫn có trong thiết bị. Thuật toán hiện tại:
 
 ```text
 ECDH-P256 / HKDF-SHA256 / AES-256-GCM
@@ -379,12 +398,13 @@ Khi signup/login có mật khẩu, frontend đồng bộ các static encryption 
 - optimistic concurrency: `expectedRevision`;
 - merge theo `deviceId`, không cho phép thay private key của một device đã biết.
 
-Backend chỉ lưu blob backup đã mã hóa. Mật khẩu và plaintext private keys không được gửi lên server.
+API backup chỉ nhận blob đã mã hóa và revision, không nhận private key dạng rõ. Mật khẩu được dùng tại client để dẫn xuất khóa backup, đồng thời vẫn được gửi tới API signup/login để xác thực; backend lưu password hash bằng bcrypt. Cần HTTPS khi triển khai.
 
 ## Mô hình dữ liệu
 
 - `User`: email, họ tên, password hash, avatar.
 - `AuthSession`: user, UUID session, device, user agent, last seen, expiry và revoke timestamp.
+- `auth:refresh:<sessionId>` (Redis): hash SHA-256 của RT hiện tại, tự hết hạn theo session; rotation không gia hạn session.
 - `Device`: user/device ID, session liên kết, public identity/encryption keys, chữ ký và trạng thái revoke.
 - `DeviceKeyBackup`: encrypted backup duy nhất theo user và revision tăng dần.
 - `Conversation`: loại direct/group, tên/avatar, creator và message cuối.
@@ -395,7 +415,7 @@ Backend chỉ lưu blob backup đã mã hóa. Mật khẩu và plaintext private
 
 - Backend không thấy plaintext text/ảnh nhưng vẫn thấy metadata: user, device, membership, thời gian, kích thước ciphertext và traffic pattern.
 - Ảnh được đưa vào plaintext JSON rồi mã hóa tại client; UI giới hạn ảnh 5 MB và backend giới hạn request body 10 MB.
-- Cookie dùng `httpOnly`, `sameSite=none`; `secure` được bật ngoài development hoặc khi backend có TLS key.
+- Cookie dùng `httpOnly`; `sameSite=lax` trên HTTP development, `sameSite=none` và `secure` ngoài development hoặc khi backend có TLS key.
 - Revoke device ngăn nhận envelope mới và vô hiệu hóa session, nhưng không thể xóa dữ liệu đã lưu trên thiết bị từ xa.
 - TOFU chưa có safety number, QR hoặc kênh xác minh ngoài ứng dụng.
 - Thiết kế static ECDH chưa có forward secrecy hay post-compromise security như Double Ratchet.
@@ -422,7 +442,8 @@ npm run build --prefix frontend
 
 Test hiện tại tập trung vào:
 
-- JWT chứa `userId`/`sessionId` và cookie phát hành/xóa có cùng scope.
+- JWT phân biệt access/refresh, thời hạn token và scope cookie phát hành/xóa.
+- Rotation, từ chối RT cũ hoặc dùng đồng thời, logout với access token hết hạn, lỗi Redis và refresh chạy đồng thời với logout.
 - Device encryption key được identity key ký đúng.
 - Payload hiện tại bind sender, message ID, revision, content type và context.
 - Shape payload/envelope, kích thước IV/ciphertext, duplicate device và public P-256 JWK.
@@ -430,7 +451,14 @@ Test hiện tại tập trung vào:
 - Định dạng encrypted key backup và tham số KDF.
 - Cache message key, identity pin và merge historical device keys.
 
-Bộ test hiện là unit/protocol test; chưa khởi động MongoDB thật và chưa có browser end-to-end test tự động.
+Mặc định chạy unit/protocol test; test controller auth mock MongoDB và Redis. Test tích hợp Lua với Redis thật tự skip nếu thiếu `REDIS_TEST_URL`. Chạy thêm test này bằng một Redis database dành cho kiểm thử:
+
+```powershell
+$env:REDIS_TEST_URL="rediss://default:<PASSWORD>@<TEST-DATABASE>.upstash.io:6379"
+npm run test --prefix backend
+```
+
+Có thể dùng `redis://127.0.0.1:6379` nếu đã chạy Redis local. Test tạo key có session ID ngẫu nhiên rồi dọn key; kiểm tra rotation nguyên tử, TTL, expiry và revoke. Bộ test chưa khởi động MongoDB thật và chưa có browser end-to-end test tự động.
 
 ## License
 

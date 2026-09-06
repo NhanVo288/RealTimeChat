@@ -1,9 +1,7 @@
 import jwt from 'jsonwebtoken'
 import User from '../model/User.js'
-import { ENV } from '../lib/env.js'
-import { clearAuthCookie, generateToken } from '../lib/utils.js'
+import { clearAuthCookie, verifyAuthToken } from '../lib/utils.js'
 import {
-    createAuthSession,
     findActiveAuthSession,
     touchAuthSession,
 } from '../services/auth-session.service.js'
@@ -13,7 +11,7 @@ export const protectRoute = async (req, res, nextFunc) => {
     try {
         const token = req.cookies.jwt
         if(!token) return res.status(401).json({message: "No token provided"})
-        const decoded = jwt.verify(token, ENV.JWT_SECRET)
+        const decoded = verifyAuthToken(token, "access")
         if(!decoded) return res.status(401).json({message: "Invalid token"})
 
         const user = await User.findById(decoded.userId).select("-password")
@@ -22,17 +20,10 @@ export const protectRoute = async (req, res, nextFunc) => {
             return res.status(404).json({message: "User Not Found"})
         }
 
-        let authSession
-        if (decoded.sessionId) {
-            authSession = await findActiveAuthSession(decoded.sessionId, decoded.userId)
-            if (!authSession) {
-                clearAuthCookie(res)
-                return res.status(401).json({ message: "Session expired or revoked" })
-            }
-        } else {
-            // Upgrade cookies issued before device-bound sessions were deployed.
-            authSession = await createAuthSession(decoded.userId, req)
-            generateToken(decoded.userId, authSession.sessionId, res)
+        const authSession = await findActiveAuthSession(decoded.sessionId, decoded.userId)
+        if (!authSession) {
+            clearAuthCookie(res)
+            return res.status(401).json({ message: "Session expired or revoked" })
         }
 
         req.user = user
@@ -45,8 +36,11 @@ export const protectRoute = async (req, res, nextFunc) => {
         }
         nextFunc()
     } catch (error) {
-        console.log(error)
-        clearAuthCookie(res)
-        return res.status(401).json({ message: "Invalid or expired session" })
+        if (error instanceof jwt.JsonWebTokenError) {
+            // Preserve RT so the client can recover from an expired access token.
+            return res.status(401).json({ message: "Invalid or expired access token" })
+        }
+        console.error("Authentication error:", error.message)
+        return res.status(503).json({ message: "Authentication unavailable" })
     }
 }

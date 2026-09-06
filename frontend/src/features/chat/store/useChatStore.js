@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { axiosInstance } from "../../../shared/lib/axios";
+import { axiosInstance, refreshAccessToken } from "../../../shared/lib/axios";
 import toast from "react-hot-toast";
 import { useAuthStore } from "../../auth/store/useAuthStore";
 import { decryptMessages, encryptMessage } from "../../../shared/lib/crypto";
@@ -171,9 +171,20 @@ export const useChatStore = create((set, get) => ({
         useAuthStore.getState().handleSessionRevoked();
       }
     });
-    eventSource.onerror = () => {
-      if (eventSource.readyState === EventSource.CLOSED) {
-        set({ conversationEventSource: null });
+    eventSource.onerror = async () => {
+      try {
+        await refreshAccessToken();
+        if (eventSource.readyState === EventSource.CLOSED &&
+            get().conversationEventSource === eventSource && useAuthStore.getState().authUser) {
+          set({ conversationEventSource: null });
+          get().subscribeToConversationEvents();
+        }
+      } catch (error) {
+        if (error.response?.status === 401 && get().conversationEventSource === eventSource) {
+          eventSource.close();
+          set({ conversationEventSource: null });
+          useAuthStore.getState().handleSessionRevoked();
+        }
       }
     };
     set({ conversationEventSource: eventSource });

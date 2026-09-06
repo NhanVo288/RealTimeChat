@@ -2,6 +2,7 @@ import Device from "../model/Device.js";
 import ConversationMember from "../model/ConversationMember.js";
 import DeviceKeyBackup from "../model/DeviceKeyBackup.js";
 import AuthSession from "../model/AuthSession.js";
+import { revokeRefreshToken } from "../services/refresh-token.service.js";
 import { disconnectSession } from "../lib/socket.js";
 import { closeSessionStreams } from "../services/event.service.js";
 import {
@@ -84,6 +85,7 @@ export const registerDevice = async (req, res) => {
         { new: true }
       );
       if (previousSession) {
+        await revokeRefreshToken(previousSession.sessionId);
         disconnectSession(previousSession.sessionId, "replaced");
         closeSessionStreams(previousSession.sessionId, "replaced");
       }
@@ -127,6 +129,7 @@ export const revokeDevice = async (req, res) => {
         { new: true }
       );
     }
+    if (revokedSession) await revokeRefreshToken(revokedSession.sessionId);
     res.status(200).json({ message: "Device and session revoked" });
     if (revokedSession) {
       disconnectSession(revokedSession.sessionId, "device-revoked");

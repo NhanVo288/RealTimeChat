@@ -1,5 +1,5 @@
 import express from "express";
-import { signUp, login, logout, updateProfile } from "../controllers/auth.controller.js";
+import { signUp, login, logout, refresh, updateProfile } from "../controllers/auth.controller.js";
 import { protectRoute } from "../middleware/auth.middleware.js";
 import { arcjetProtect } from "../middleware/arcjet.middleware.js";
 import {
@@ -16,6 +16,7 @@ router.use(arcjetProtect)
 router.post("/signup", signUp);
 router.post("/login", login);
 router.post("/logout", logout);
+router.post("/refresh", refresh);
 router.put("/update-profile", protectRoute,updateProfile);
 router.get("/devices", protectRoute, getDevices);
 router.put("/devices/:deviceId", protectRoute, registerDevice);

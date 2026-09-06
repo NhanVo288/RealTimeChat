@@ -1,11 +1,12 @@
 import User from "../model/User.js";
 import jwt from "jsonwebtoken";
-import { clearAuthCookie, generateToken } from "../lib/utils.js";
+import { clearAuthCookie, generateToken, createRefreshToken, setRefreshCookie, verifyAuthToken } from "../lib/utils.js";
 import bcrypt from "bcryptjs";
 import { sendWelcomeEmail } from "../email/emailHandler.js";
 import { ENV } from "../lib/env.js";
 import cloudinary from "../lib/cloudinary.js";
-import { createAuthSession, revokeAuthSession } from "../services/auth-session.service.js";
+import { createAuthSession, revokeAuthSession, findActiveAuthSession } from "../services/auth-session.service.js";
+import { issueAuthTokens, rotateRefreshToken, revokeRefreshToken } from "../services/refresh-token.service.js";
 import { disconnectSession } from "../lib/socket.js";
 import { closeSessionStreams } from "../services/event.service.js";
 export const signUp = async (req, res) => {
@@ -40,7 +41,7 @@ export const signUp = async (req, res) => {
 
     const saveUser = await newUser.save();
     const authSession = await createAuthSession(saveUser._id, req);
-    generateToken(saveUser._id, authSession.sessionId, res);
+    await issueAuthTokens(authSession, res);
     res.status(201).json({
       _id: saveUser._id,
       fullName: saveUser.fullName,
@@ -70,7 +71,7 @@ export const login = async (req, res) => {
     if (!isPasswordCorrect)
       return res.status(400).json({ message: "Invalid credentials" });
     const authSession = await createAuthSession(user._id, req);
-    generateToken(user._id, authSession.sessionId, res);
+    await issueAuthTokens(authSession, res);
     res.status(200).json({
       _id: user._id,
       fullName: user.fullName,
@@ -84,22 +85,58 @@ export const login = async (req, res) => {
 };
 
 export const logout = async (req, res) => {
-  const token = req.cookies.jwt;
-  let sessionId = null;
   try {
-    const decoded = token ? jwt.verify(token, ENV.JWT_SECRET) : null;
-    sessionId = decoded?.sessionId || null;
-    if (sessionId) {
-      await revokeAuthSession(sessionId, decoded.userId);
+    // Verify signatures even for expired cookies so logout also works after AT expiry.
+    const sessions = new Map();
+    for (const [token, type] of [[req.cookies?.refreshToken, "refresh"], [req.cookies?.jwt, "access"]]) {
+      if (!token) continue;
+      try {
+        const decoded = verifyAuthToken(token, type, { ignoreExpiration: true });
+        sessions.set(decoded.sessionId, decoded.userId);
+      } catch (error) {
+        if (!(error instanceof jwt.JsonWebTokenError)) throw error;
+      }
     }
-  } catch {
-    // Clearing an invalid cookie is still a successful logout.
+    for (const [sessionId, userId] of sessions) {
+      await revokeAuthSession(sessionId, userId);
+      await revokeRefreshToken(sessionId);
+      disconnectSession(sessionId, "logout");
+      closeSessionStreams(sessionId, "logout");
+    }
+    clearAuthCookie(res);
+    return res.status(200).json({ message: "Logout Successfully" });
+  } catch (error) {
+    console.error("Logout error:", error.message);
+    return res.status(503).json({ message: "Logout unavailable, please retry" });
   }
-  clearAuthCookie(res);
-  res.status(200).json({ message: "Logout Successfully" });
-  if (sessionId) {
-    disconnectSession(sessionId, "logout");
-    closeSessionStreams(sessionId, "logout");
+};
+
+export const refresh = async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  try {
+    const previous = req.cookies?.refreshToken;
+    if (!previous) return res.status(401).json({ message: "No refresh token provided" });
+    const decoded = verifyAuthToken(previous, "refresh");
+    const session = await findActiveAuthSession(decoded.sessionId, decoded.userId);
+    if (!session || !(await User.exists({ _id: decoded.userId }))) {
+      await revokeRefreshToken(decoded.sessionId);
+      clearAuthCookie(res);
+      return res.status(401).json({ message: "Session expired or revoked" });
+    }
+    const next = createRefreshToken(decoded.userId, decoded.sessionId, session.expiresAt);
+    if (!(await rotateRefreshToken(decoded.sessionId, previous, next))) {
+      // Do not clear cookies: a concurrent successful refresh may have just set them.
+      return res.status(401).json({ message: "Refresh token expired, revoked or already used" });
+    }
+    generateToken(decoded.userId, decoded.sessionId, res);
+    setRefreshCookie(res, next, session.expiresAt);
+    return res.status(200).json({ message: "Token refreshed" });
+  } catch (error) {
+    if (error instanceof jwt.JsonWebTokenError) {
+      return res.status(401).json({ message: "Invalid or expired refresh token" });
+    }
+    console.error("Refresh error:", error.message);
+    return res.status(503).json({ message: "Refresh unavailable, please retry" });
   }
 };
 

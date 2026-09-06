@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import path from "path";
 import { connectDB } from "./lib/db.js";
 import { ENV } from "./lib/env.js";
+import { redis } from "./lib/redis.js";
 import { app, server } from "./lib/socket.js";
 dotenv.config();
 
@@ -50,6 +51,7 @@ if (ENV.NODE_ENV === "production") {
     res.sendFile(path.join(__dirname, "../frontend/dist/index.html"));
   });
 }
+await redis.connect();
 server.listen(PORT, () => {
   console.log("server running on port:", PORT);
   connectDB();

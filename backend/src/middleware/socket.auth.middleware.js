@@ -1,6 +1,5 @@
-import jwt from "jsonwebtoken";
 import User from "../model/User.js";
-import { ENV } from "../lib/env.js";
+import { verifyAuthToken } from "../lib/utils.js";
 import { findActiveAuthSession } from "../services/auth-session.service.js";
 
 export const socketAuthMiddleware = async (socket, next) => {
@@ -13,7 +12,7 @@ export const socketAuthMiddleware = async (socket, next) => {
       console.log("Socket connect error: No token provided");
       return next(new Error("Unauthorized - No token provided"));
     }
-    const decoded = jwt.verify(token, ENV.JWT_SECRET);
+    const decoded = verifyAuthToken(token, "access");
     if (!decoded) {
       console.log("Socket connect error : invalid token");
       return next(new Error("Invalid Token"));

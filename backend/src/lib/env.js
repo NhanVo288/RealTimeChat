@@ -5,6 +5,7 @@ export const ENV = {
     MONGO_URI: process.env.MONGO_URI,
     NODE_ENV: process.env.NODE_ENV,
     JWT_SECRET: process.env.JWT_SECRET,
+    REDIS_URL: process.env.REDIS_URL || "redis://127.0.0.1:6379",
     CLIENT_URL: process.env.CLIENT_URL,
     RESEND_KEY: process.env.RESEND_KEY,
     EMAIL_FROM: process.env.EMAIL_FROM,
